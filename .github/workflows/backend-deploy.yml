@@ -54,6 +54,13 @@ jobs:
           fi
           echo "ECR_REPOSITORY_URI=${ECR_REGISTRY}/${ECR_REPOSITORY}" >> $GITHUB_ENV
 
+      - name: Debug environment variables
+        run: |
+          echo "GITHUB_REF: $GITHUB_REF"
+          echo "ENV_NAME: ${{ env.ENV_NAME }}"
+          echo "IMAGE_TAG: ${{ env.IMAGE_TAG }}"
+          echo "ECR_REPOSITORY_URI: ${{ env.ECR_REPOSITORY_URI }}"
+
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
