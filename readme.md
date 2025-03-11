@@ -1,4 +1,4 @@
-# Full-Stack Application
+# Swash Flag
 
 A modern web application built with React frontend and containerized backend, managed in a Turborepo monorepo structure with infrastructure as code using Terraform.
 
