@@ -1,0 +1,29 @@
+{
+  "name": "swash-flag-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test"
+  },
+  "packageManager": "pnpm@10.1.0",
+  "devDependencies": {
+    "turbo": "latest"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "typescript": "^5.7.2",
+      "@types/react": "^19.0.8",
+      "@types/react-dom": "^19.0.3",
+      "react": "^19.0.0",
+      "react-dom": "^19.0.0",
+      "@prisma/client": "^6.4.1",
+      "prisma": "^6.4.1"
+    }
+  }
+}

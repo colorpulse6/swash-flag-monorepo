@@ -1,0 +1,40 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../node_modules/.prisma/client"
+}
+
+model User {
+  id         String        @id @default(uuid())
+  email      String        @unique
+  apiKey     String        @unique @default(uuid())
+  features   FeatureFlag[]
+  password   String
+  apiToken   ApiToken?     @relation(fields: [apiTokenId], references: [id])
+  apiTokenId String?       @unique
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+}
+
+model FeatureFlag {
+  id        String   @id @default(uuid())
+  name      String
+  enabled   Boolean  @default(false)
+  targeting Json
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ApiToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String   @unique // ✅ Ensures one-to-one relationship
+  createdAt DateTime @default(now())
+  User      User?
+}

@@ -1,0 +1,50 @@
+node_modules
+.idea
+.DS_Store
+dist
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Specific environment files in apps
+apps/*/\.env
+apps/*/\.env.*
+!apps/*/\.env.example
+
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+
+# Exclude terraform.tfvars files, which might contain sensitive data
+*.tfvars
+*.tfvars.json
+
+# Exclude override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Include override files you do want to add to version control
+#!example_override.tf
+
+# Include tfplan files to ignore the plan output of command: terraform plan
+*.tfplan
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+# Ignore lock files
+.terraform.lock.hcl
+
+/.github/workflows/

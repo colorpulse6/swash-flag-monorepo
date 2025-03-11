@@ -1,0 +1,100 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+    paths:
+      - 'apps/backend/**'
+      - 'terraform/modules/backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: swashflag-backend
+  TF_VERSION: 1.5.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set image tags
+        id: set-tags
+        run: |
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "IMAGE_TAG=${VERSION}" >> $GITHUB_ENV
+            echo "ENV_NAME=prod" >> $GITHUB_ENV
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            echo "IMAGE_TAG=staging-${GITHUB_SHA::7}" >> $GITHUB_ENV
+            echo "ENV_NAME=staging" >> $GITHUB_ENV
+          else
+            echo "IMAGE_TAG=dev-${GITHUB_SHA::7}" >> $GITHUB_ENV
+            echo "ENV_NAME=dev" >> $GITHUB_ENV
+          fi
+          echo "ECR_REPOSITORY_URI=${ECR_REGISTRY}/${ECR_REPOSITORY}" >> $GITHUB_ENV
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: ./apps/backend
+          push: true
+          tags: ${{ env.ECR_REPOSITORY_URI }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  terraform:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Terraform tfvars
+        run: |
+          sed -i 's|backend_image.*=.*".*"|backend_image = "${{ env.ECR_REPOSITORY_URI }}:${{ env.IMAGE_TAG }}"|' terraform/environments/${{ env.ENV_NAME }}/terraform.tfvars
+
+      - name: Terraform Init
+        run: |
+          cd terraform/environments/${{ env.ENV_NAME }}
+          terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd terraform/environments/${{ env.ENV_NAME }}
+          terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd terraform/environments/${{ env.ENV_NAME }}
+          terraform apply -auto-approve tfplan

@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #3B82F6; /* Blue */
+  --color-secondary: #6B7280; /* Gray */
+  --color-success: #10B981; /* Green */
+  --color-danger: #EF4444; /* Red */
+  --color-background: #F9FAFB; /* Light gray */
+  --color-card: #FFFFFF; /* White */
+}
+
+/* Custom styles */
+body {
+  @apply bg-gray-50;
+}
+
+.container {
+  @apply mx-auto px-4;
+}
+
+button {
+  @apply cursor-pointer;
+}
+
+.card {
+  @apply bg-white rounded-lg shadow-md p-6;
+}
+
+.button-primary {
+  @apply bg-[var(--color-primary)] text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors;
+}
+
+.button-secondary {
+  @apply bg-[var(--color-secondary)] text-white px-4 py-2 rounded-md hover:bg-gray-700 transition-colors;
+}
+
+.button-danger {
+  @apply bg-[var(--color-danger)] text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors;
+}
+
+.sidebar {
+  transition: transform 0.2s ease-in-out;
+}
+
+.toggle-switch {
+  transition: background-color 0.2s ease-in-out, transform 0.2s ease-in-out;
+}
