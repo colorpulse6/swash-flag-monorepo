@@ -46,5 +46,3 @@ terraform.rc
 
 # Ignore lock files
 .terraform.lock.hcl
-
-/.github/workflows/
