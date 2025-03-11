@@ -7,7 +7,7 @@ on:
     paths:
       - 'apps/backend/**'
       - 'terraform/modules/backend/**'
-      - '..github/workflows/backend-deploy.yml'
+      - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
 
 env:
@@ -94,7 +94,7 @@ jobs:
           terraform plan -out=tfplan
 
       - name: Terraform Apply
-        if: .github.event_name == 'push' || .github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           cd terraform/environments/${{ env.ENV_NAME }}
           terraform apply -auto-approve tfplan
