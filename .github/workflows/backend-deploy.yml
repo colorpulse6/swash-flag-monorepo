@@ -1,5 +1,9 @@
 name: Build and Deploy
 
+concurrency:
+  group: terraform-${{ github.ref }}-${{ env.ENV_NAME }}
+  cancel-in-progress: false  # Wait for running jobs to complete
+
 on:
   push:
     branches: [main, develop]
