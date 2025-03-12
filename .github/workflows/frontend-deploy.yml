@@ -30,23 +30,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
 
       - name: Setup Node.js
-      - uses: actions/setup-node@v4
+        uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: 'pnpm'
+          cache-dependency-path: 'apps/frontend/pnpm-lock.yaml'
 
       - name: Install dependencies
         run: |
           cd apps/frontend
-          npm ci
+          pnpm install
 
       - name: Build frontend
         run: |
           cd apps/frontend
-          npm run build
+          pnpm run build
 
       - name: Set environment name
         id: set-env
