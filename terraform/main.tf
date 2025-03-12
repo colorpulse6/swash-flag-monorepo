@@ -39,7 +39,6 @@ module "database" {
   backup_retention_period     = var.db_backup_retention_period
   skip_final_snapshot         = var.db_skip_final_snapshot
   storage_encrypted           = var.db_storage_encrypted
-
   tags                        = var.tags
   depends_on                  = [module.networking]
 }
@@ -58,7 +57,6 @@ module "backend" {
   public_subnet_ids = module.networking.public_subnet_ids
   client_url        = var.client_url
   tags              = var.tags
-
   depends_on = [module.database]
 }
 
