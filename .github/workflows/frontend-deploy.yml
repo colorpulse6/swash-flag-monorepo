@@ -27,18 +27,16 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: 'apps/frontend'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: 'apps/frontend/package-lock.json'
+          node-version: lts/*
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: |
@@ -52,7 +50,6 @@ jobs:
 
       - name: Set environment name
         id: set-env
-        working-directory: 'apps/frontend'
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "ENV_NAME=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
@@ -72,7 +69,6 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload build artifacts
-        working-directory: 'apps/frontend'
         run: |
           aws s3 sync apps/frontend/build/ s3://swashflag-${{ env.ENV_NAME }}-frontend/ --delete
 
@@ -88,7 +84,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
