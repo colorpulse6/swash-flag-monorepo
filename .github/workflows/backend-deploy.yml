@@ -1,5 +1,9 @@
 name: Build and Deploy
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 on:
   push:
     branches: [main, develop]
@@ -9,10 +13,6 @@ on:
       - 'terraform/modules/backend/**'
       - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
-
-  concurrency:
-    group: backend-${{ github.ref }}-${{ github.event.inputs.environment || 'auto' }}
-    cancel-in-progress: false
 
 env:
   AWS_REGION: us-west-2
