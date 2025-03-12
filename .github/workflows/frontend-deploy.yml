@@ -144,7 +144,7 @@ jobs:
       - name: Terraform Plan
         run: |
           cd terraform/environments/${{ env.ENV_NAME }}
-          terraform plan -out=tfplan
+          terraform plan -var="aws_region=${{ env.AWS_REGION }}" -out=tfplan
 
       - name: Terraform Apply
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
