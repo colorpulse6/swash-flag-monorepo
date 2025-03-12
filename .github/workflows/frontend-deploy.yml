@@ -33,7 +33,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          run_install: false  # We'll run the install command manually
+          run_install: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,6 +51,15 @@ jobs:
         run: |
           cd apps/frontend
           pnpm run build
+
+      - name: Debug - List build directory contents
+        run: |
+          echo "Checking for build output directory..."
+          ls -la apps/frontend/
+          echo "Checking 'dist' directory (Vite default)..."
+          ls -la apps/frontend/dist/ || echo "dist directory not found"
+          echo "Checking 'public' directory..."
+          ls -la apps/frontend/public/ || echo "public directory not found"
 
       - name: Set environment name
         id: set-env
@@ -74,7 +83,7 @@ jobs:
 
       - name: Upload build artifacts
         run: |
-          aws s3 sync apps/frontend/build/ s3://swashflag-${{ env.ENV_NAME }}-frontend/ --delete
+          aws s3 sync apps/frontend/dist/ s3://swashflag-${{ env.ENV_NAME }}-frontend/ --delete
 
       - name: Invalidate CloudFront cache
         if: env.ENV_NAME == 'prod' || env.ENV_NAME == 'staging'
