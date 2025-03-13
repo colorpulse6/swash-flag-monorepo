@@ -46,3 +46,5 @@ terraform.rc
 
 # Ignore lock files
 .terraform.lock.hcl
+
+apply-variables-to-gh-secrets.sh
