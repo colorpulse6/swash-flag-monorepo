@@ -70,7 +70,11 @@ jobs:
           backend_cpu = ${{ secrets.TF_VAR_BACKEND_CPU }}
           backend_memory = ${{ secrets.TF_VAR_BACKEND_MEMORY }}
           # backend_image is set separately in the specific workflows
-
+          
+          # Database
+          db_allocated_storage = "${{ secrets.DB_ALLOCATED_STORAGE }}"
+          db_username = "${{ secrets.TF_VAR_DB_USERNAME }}"
+          db_password = "${{ secrets.TF_VAR_DB_PASSWORD }}"
           # Frontend
           frontend_domain_name = "${FRONTEND_DOMAIN}"
           frontend_hosting_type = "${HOSTING_TYPE}"
@@ -98,19 +102,6 @@ jobs:
             echo "success=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-
-          # Validate the tfvars file format to catch errors
-          echo "Validating terraform.tfvars format..."
-          cd terraform/environments/${{ inputs.environment }}
-          if grep -q "public_subnets.*public_subnets" terraform.tfvars; then
-            echo "Error: Duplicate public_subnets definition found. Fixing..."
-            sed -i 's/public_subnets = public_subnets.*=/public_subnets =/' terraform.tfvars
-          fi
-          if grep -q "private_subnets.*private_subnets" terraform.tfvars; then
-            echo "Error: Duplicate private_subnets definition found. Fixing..."
-            sed -i 's/private_subnets = private_subnets.*=/private_subnets =/' terraform.tfvars
-          fi
-          cat terraform.tfvars
 
       - name: Upload terraform.tfvars as artifact
         uses: actions/upload-artifact@v4
