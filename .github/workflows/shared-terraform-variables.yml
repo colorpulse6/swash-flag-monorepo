@@ -99,6 +99,15 @@ jobs:
             exit 1
           fi
 
+          # Validate the tfvars file format to catch errors
+          echo "Validating terraform.tfvars format..."
+          cd terraform/environments/${{ inputs.environment }}
+          if grep -q "public_subnets.*public_subnets" terraform.tfvars; then
+            echo "Error: Duplicate public_subnets definition found. Fixing..."
+            sed -i 's/public_subnets = public_subnets.*=/public_subnets =/' terraform.tfvars
+          fi
+          cat terraform.tfvars
+
       - name: Upload terraform.tfvars as artifact
         uses: actions/upload-artifact@v4
         with:
