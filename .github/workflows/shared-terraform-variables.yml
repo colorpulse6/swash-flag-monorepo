@@ -76,6 +76,7 @@ jobs:
           db_username = "${{ secrets.TF_VAR_DB_USERNAME }}"
           db_password = "${{ secrets.TF_VAR_DB_PASSWORD }}"
           db_backup_retention_period = "${{ secrets.TF_VAR_BACKUP_RETENTION }}"
+          db_engine_version = "14.7"
           # Frontend
           frontend_domain_name = "${FRONTEND_DOMAIN}"
           frontend_hosting_type = "${HOSTING_TYPE}"
