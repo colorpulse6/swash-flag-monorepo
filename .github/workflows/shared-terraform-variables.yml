@@ -29,30 +29,54 @@ jobs:
         run: |
           # Make sure the environment directory exists
           mkdir -p terraform/environments/${{ inputs.environment }}
-          
+
+          # Set frontend domain name based on environment
+          if [ "${{ inputs.environment }}" == "prod" ]; then
+            FRONTEND_DOMAIN="swashflag.com"
+          else
+            FRONTEND_DOMAIN="${{ inputs.environment }}.swashflag.com"
+          fi
+
+          # Set other environment-specific variables
+          if [ "${{ inputs.environment }}" == "prod" ]; then
+            HOSTING_TYPE="cloudfront"
+            MULTI_AZ="true"
+            BACKUP_RETENTION="30"
+            SKIP_FINAL_SNAPSHOT="false"
+            MONITORING_INTERVAL="60"
+            ENABLE_WAF="true"
+          else
+            HOSTING_TYPE="s3_only"
+            MULTI_AZ="false"
+            BACKUP_RETENTION="7"
+            SKIP_FINAL_SNAPSHOT="true"
+            MONITORING_INTERVAL="0"
+            ENABLE_WAF="false"
+          fi
+
           # Create the tfvars file using GitHub Secrets
           cat > terraform/environments/${{ inputs.environment }}/terraform.tfvars << EOF
           # Generated from GitHub Secrets and Environment Variables
           project_name = "swashflag-${{ inputs.environment }}"
           aws_region = "${{ env.AWS_REGION }}"
-          
+
           # Networking
           vpc_cidr = "${{ secrets.TF_VAR_VPC_CIDR }}"
           public_subnets = ${{ secrets.TF_VAR_PUBLIC_SUBNETS }}
           private_subnets = ${{ secrets.TF_VAR_PRIVATE_SUBNETS }}
           azs = ["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]
-          
+
           # Backend
           backend_cpu = ${{ secrets.TF_VAR_BACKEND_CPU }}
           backend_memory = ${{ secrets.TF_VAR_BACKEND_MEMORY }}
           # backend_image is set separately in the specific workflows
-          
+
           # Frontend
-          frontend_domain_name = "${{ inputs.environment == 'prod' && '' || inputs.environment + '.' }}swashflag.com"          
-          frontend_hosting_type = "${{ inputs.environment == 'prod' && 'cloudfront' || 's3_only' }}"
+          frontend_domain_name = "${FRONTEND_DOMAIN}"
+          frontend_hosting_type = "${HOSTING_TYPE}"
           frontend_cloudfront_price_class = "PriceClass_100"
-          frontend_enable_waf = ${{ inputs.environment == 'prod' && 'true' || 'false' }}
-          
+          frontend_enable_waf = ${ENABLE_WAF}
+
           # Tags
           tags = {
             Environment = "${{ inputs.environment }}"
@@ -61,9 +85,9 @@ jobs:
             ManagedBy = "github-actions"
           }
           EOF
-          
+
           echo "Generated terraform.tfvars for ${{ inputs.environment }} environment"
-          
+
           # Verify the file was created
           if [ -f terraform/environments/${{ inputs.environment }}/terraform.tfvars ]; then
             echo "Variables file created successfully"
