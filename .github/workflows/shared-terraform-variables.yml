@@ -48,7 +48,8 @@ jobs:
           # backend_image is set separately in the specific workflows
           
           # Frontend
-          frontend_domain_name = "${{ inputs.environment == 'prod' && '' || inputs.environment + '.' }}swashflag.com"          frontend_hosting_type = "${{ inputs.environment == 'prod' && 'cloudfront' || 's3_only' }}"
+          frontend_domain_name = "${{ inputs.environment == 'prod' && '' || inputs.environment + '.' }}swashflag.com"          
+          frontend_hosting_type = "${{ inputs.environment == 'prod' && 'cloudfront' || 's3_only' }}"
           frontend_cloudfront_price_class = "PriceClass_100"
           frontend_enable_waf = ${{ inputs.environment == 'prod' && 'true' || 'false' }}
           
