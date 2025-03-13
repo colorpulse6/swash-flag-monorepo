@@ -106,6 +106,10 @@ jobs:
             echo "Error: Duplicate public_subnets definition found. Fixing..."
             sed -i 's/public_subnets = public_subnets.*=/public_subnets =/' terraform.tfvars
           fi
+          if grep -q "private_subnets.*private_subnets" terraform.tfvars; then
+            echo "Error: Duplicate private_subnets definition found. Fixing..."
+            sed -i 's/private_subnets = private_subnets.*=/private_subnets =/' terraform.tfvars
+          fi
           cat terraform.tfvars
 
       - name: Upload terraform.tfvars as artifact
