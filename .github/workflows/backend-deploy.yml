@@ -51,7 +51,7 @@ jobs:
   # Call shared workflow to generate terraform variables
   terraform-vars:
     needs: set-environment
-    uses: ./.github/workflows/terraform-vars.yml
+    uses: ./.github/workflows/shared-terraform-variables.yml
     with:
       environment: ${{ needs.set-environment.outputs.env_name }}
     secrets: inherit
