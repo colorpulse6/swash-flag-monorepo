@@ -84,6 +84,7 @@ jobs:
           frontend_hosting_type = "${HOSTING_TYPE}"
           frontend_cloudfront_price_class = "PriceClass_100"
           frontend_enable_waf = ${ENABLE_WAF}
+          db_multi_az = false
 
           # Tags
           tags = {
