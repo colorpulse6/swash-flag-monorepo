@@ -145,6 +145,23 @@ jobs:
           name: terraform-vars-${{ needs.set-environment.outputs.env_name }}
           path: terraform/environments/${{ needs.set-environment.outputs.env_name }}
 
+      - name: Update backend_image in tfvars
+        run: |
+          cd terraform/environments/${{ needs.set-environment.outputs.env_name }}
+          # Get the latest image from ECR for the current environment
+          REPOSITORY="${{ env.AWS_REGION }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/swashflag-backend"
+          if [[ "${{ needs.set-environment.outputs.env_name }}" == "prod" ]]; then
+            TAG=$(aws ecr describe-images --repository-name swashflag-backend --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text | grep -v "dev\|staging")
+          elif [[ "${{ needs.set-environment.outputs.env_name }}" == "staging" ]]; then
+            TAG=$(aws ecr describe-images --repository-name swashflag-backend --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text | grep "staging")
+          else
+            TAG=$(aws ecr describe-images --repository-name swashflag-backend --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text | grep "dev")
+          fi
+          echo "Using backend image tag: $TAG"
+          IMAGE_URI="${REPOSITORY}:${TAG}"
+          echo 'backend_image = "'"$IMAGE_URI"'"' >> terraform.tfvars
+          grep 'backend_image' terraform.tfvars
+
       - name: Terraform Init
         run: |
           cd terraform/environments/${{ needs.set-environment.outputs.env_name }}
