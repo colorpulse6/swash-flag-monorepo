@@ -40,20 +40,29 @@ jobs:
           # Set other environment-specific variables
           if [ "${{ inputs.environment }}" == "prod" ]; then
             HOSTING_TYPE="cloudfront"
-            MULTI_AZ="true"
-            BACKUP_RETENTION="30"
-            SKIP_FINAL_SNAPSHOT="false"
-            MONITORING_INTERVAL="60"
-            ENABLE_WAF="true"
-          else
-            HOSTING_TYPE="s3_only"
             MULTI_AZ="false"
             BACKUP_RETENTION="7"
             SKIP_FINAL_SNAPSHOT="true"
             MONITORING_INTERVAL="0"
             ENABLE_WAF="false"
-          fi
-
+            DB_FINAL_SNAPSHOT_IDENTIFIER="swashflag-prod-final"
+            DB_PERFORMANCE_INSIGHTS="false"
+            DB_DELETION_PROTECTION="true"  # Keep this for data safety
+            MAINTENANCE_WINDOW="Sun:03:00-Sun:04:00"
+            CLOUDFRONT_PRICE_CLASS="PriceClass_100"
+          else
+              HOSTING_TYPE="s3_only"
+              MULTI_AZ="false"
+              BACKUP_RETENTION="1"
+              SKIP_FINAL_SNAPSHOT="true"
+              MONITORING_INTERVAL="0"
+              ENABLE_WAF="false"
+              DB_FINAL_SNAPSHOT_IDENTIFIER=""
+              DB_PERFORMANCE_INSIGHTS="false"
+              DB_DELETION_PROTECTION="false"
+              MAINTENANCE_WINDOW="Sun:03:00-Sun:04:00"
+              CLOUDFRONT_PRICE_CLASS="PriceClass_100"
+            fi
           # Create the tfvars file using GitHub Secrets
           cat > terraform/environments/${{ inputs.environment }}/terraform.tfvars << EOF
           # Generated from GitHub Secrets and Environment Variables
@@ -75,20 +84,26 @@ jobs:
           db_allocated_storage = "${{ secrets.DB_ALLOCATED_STORAGE }}"
           db_username = "${{ secrets.TF_VAR_DB_USERNAME }}"
           db_password = "${{ secrets.TF_VAR_DB_PASSWORD }}"
-          db_backup_retention_period = "${{ secrets.TF_VAR_BACKUP_RETENTION }}"
+          db_backup_retention_period = ${BACKUP_RETENTION}
           db_engine_version = "14.7"
           db_instance_class = "${{ secrets.TF_VAR_DB_INSTANCE_CLASS }}"
-          db_maintenance_window = "Sun:02:00-Sun:03:00"
+          db_maintenance_window = "${MAINTENANCE_WINDOW}"
           db_name = "${{ secrets.TF_VAR_DB_NAME }}"
           db_parameter_group_family = "postgres14"
           db_storage_encrypted = true
+          db_skip_final_snapshot = ${SKIP_FINAL_SNAPSHOT}
+          db_multi_az = ${MULTI_AZ}
+          db_final_snapshot_identifier = "${DB_FINAL_SNAPSHOT_IDENTIFIER}"
+          db_performance_insights_enabled = ${DB_PERFORMANCE_INSIGHTS}
+          db_deletion_protection = ${DB_DELETION_PROTECTION}
+          db_monitoring_interval = ${MONITORING_INTERVAL}
+          db_auto_minor_version_upgrade = false
+          db_apply_immediately = true
           # Frontend
           frontend_domain_name = "${FRONTEND_DOMAIN}"
           frontend_hosting_type = "${HOSTING_TYPE}"
-          frontend_cloudfront_price_class = "PriceClass_100"
+          frontend_cloudfront_price_class = "${CLOUDFRONT_PRICE_CLASS}"
           frontend_enable_waf = ${ENABLE_WAF}
-          db_multi_az = false
-
           # Tags
           tags = {
             Environment = "${{ inputs.environment }}"
