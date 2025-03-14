@@ -81,7 +81,7 @@ jobs:
           # backend_image is set separately in the specific workflows
           
           # Database
-          db_allocated_storage = ${{ secrets.DB_ALLOCATED_STORAGE }}
+          db_allocated_storage = ${{ secrets.DB_ALLOCATED_STORAGE || 10 }}
           db_username = "${{ secrets.TF_VAR_DB_USERNAME }}"
           db_password = "${{ secrets.TF_VAR_DB_PASSWORD }}"
           db_backup_retention_period = ${BACKUP_RETENTION}
