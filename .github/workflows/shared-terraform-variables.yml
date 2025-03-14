@@ -78,7 +78,7 @@ jobs:
           db_backup_retention_period = "${{ secrets.TF_VAR_BACKUP_RETENTION }}"
           db_engine_version = "14.7"
           db_instance_class = "${{ secrets.TF_VAR_DB_INSTANCE_CLASS }}"
-          de_maintenance_window = "${{ secrets.TF_VAR_DB_MAINTANENCE_WINDOW }}"
+          db_maintenance_window = "Sun:02:00-Sun:03:00"
           # Frontend
           frontend_domain_name = "${FRONTEND_DOMAIN}"
           frontend_hosting_type = "${HOSTING_TYPE}"
