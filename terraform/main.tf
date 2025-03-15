@@ -65,6 +65,12 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
   enable_dns_hostnames = true
   tags = merge(local.tags, { Name = "${local.resource_prefix}-vpc" })
+
+  # Add lifecycle block to handle existing VPCs
+  lifecycle {
+    # Ignore changes to the CIDR block to avoid conflicts with existing VPCs
+    ignore_changes = [cidr_block]
+  }
 }
 
 resource "aws_internet_gateway" "main" {

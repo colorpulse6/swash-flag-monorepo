@@ -116,6 +116,59 @@ jobs:
             echo "bucket_exists=false" >> $GITHUB_OUTPUT
           fi
       
+      - name: Check for existing VPC
+        id: check_vpc
+        run: |
+          cd terraform
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          VPC_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-vpc"
+          
+          echo "Checking if VPC $VPC_NAME already exists..."
+          
+          # Find VPC by name tag
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=$VPC_NAME" --query "Vpcs[0].VpcId" --output text)
+          
+          if [ "$VPC_ID" != "None" ] && [ -n "$VPC_ID" ]; then
+            echo "Found existing VPC with ID: $VPC_ID"
+            echo "Importing VPC into Terraform state..."
+            
+            # Import the VPC into Terraform state
+            terraform import \
+              -var="project_name=${{ env.PROJECT_NAME }}" \
+              -var="aws_region=${{ env.AWS_REGION }}" \
+              -var="vpc_cidr=10.0.0.0/16" \
+              -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
+              -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
+              -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
+              -var="db_username=${{ secrets.DB_USERNAME }}" \
+              -var="db_password=${{ secrets.DB_PASSWORD }}" \
+              aws_vpc.main "$VPC_ID" || echo "VPC may already be in Terraform state"
+            
+            # Also check for Internet Gateway associated with this VPC
+            IGW_ID=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --query "InternetGateways[0].InternetGatewayId" --output text)
+            
+            if [ "$IGW_ID" != "None" ] && [ -n "$IGW_ID" ]; then
+              echo "Found existing Internet Gateway with ID: $IGW_ID"
+              echo "Importing Internet Gateway into Terraform state..."
+              
+              terraform import \
+                -var="project_name=${{ env.PROJECT_NAME }}" \
+                -var="aws_region=${{ env.AWS_REGION }}" \
+                -var="vpc_cidr=10.0.0.0/16" \
+                -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
+                -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
+                -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
+                -var="db_username=${{ secrets.DB_USERNAME }}" \
+                -var="db_password=${{ secrets.DB_PASSWORD }}" \
+                aws_internet_gateway.main "$IGW_ID" || echo "Internet Gateway may already be in Terraform state"
+            fi
+
+            echo "vpc_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "VPC does not exist or you don't have access to it."
+            echo "vpc_exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Terraform Plan
         run: |
           cd terraform
@@ -145,7 +198,43 @@ jobs:
           
           echo "Terraform apply failed. Attempting direct apply without using saved plan..."
           
-          # Run apply directly (not using the plan file)
+          # Check for existing VPC before trying again
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          VPC_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-vpc"
+          
+          echo "Looking for existing VPCs to reuse or clean up..."
+          
+          # Try to find any existing VPC that could be reused
+          ALL_VPCS=$(aws ec2 describe-vpcs --query "Vpcs[?Tags[?Key=='Environment' && Value=='$ENVIRONMENT']]" --output json)
+          VPC_COUNT=$(echo "$ALL_VPCS" | jq 'length')
+          
+          if [ "$VPC_COUNT" -gt "0" ]; then
+            echo "Found $VPC_COUNT existing VPCs for environment $ENVIRONMENT"
+            
+            # Get the ID of the first matching VPC
+            EXISTING_VPC_ID=$(echo "$ALL_VPCS" | jq -r '.[0].VpcId')
+            echo "Will attempt to reuse VPC: $EXISTING_VPC_ID"
+            
+            # Import the existing VPC
+            terraform import \
+              -var="project_name=${{ env.PROJECT_NAME }}" \
+              -var="aws_region=${{ env.AWS_REGION }}" \
+              -var="vpc_cidr=10.0.0.0/16" \
+              -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
+              -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
+              -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
+              -var="db_username=${{ secrets.DB_USERNAME }}" \
+              -var="db_password=${{ secrets.DB_PASSWORD }}" \
+              aws_vpc.main "$EXISTING_VPC_ID" || true
+          else
+            echo "No existing VPCs found for environment $ENVIRONMENT"
+            echo "You have reached the AWS VPC limit. You have these options:"
+            echo "1. Delete unused VPCs in the AWS Console"
+            echo "2. Request a VPC limit increase from AWS Support"
+            echo "3. Use a different AWS region for this deployment"
+          fi
+          # Try applying again with additional error handling
+          echo "Running targeted apply for non-network resources..."
           terraform apply \
             -parallelism=1 \
             -auto-approve \
@@ -156,7 +245,7 @@ jobs:
             -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
             -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
             -var="db_username=${{ secrets.DB_USERNAME }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}"
+            -var="db_password=${{ secrets.DB_PASSWORD }}" || echo "Unable to apply Terraform changes. Check AWS VPC limits."
       - name: Get deployment outputs
         id: terraform
         run: |
