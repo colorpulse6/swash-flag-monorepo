@@ -103,6 +103,22 @@ jobs:
             -var="db_password=${{ secrets.DB_PASSWORD }}" \
             -out=tfplan
       
+      - name: Check for existing S3 bucket
+        id: check_bucket
+        run: |
+          cd terraform
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          BUCKET_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-deployment"
+          echo "Checking if bucket $BUCKET_NAME already exists..."
+          if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            echo "Bucket $BUCKET_NAME already exists and is owned by you."
+            echo "Importing bucket into Terraform state..."
+            terraform import -var="project_name=${{ env.PROJECT_NAME }}" aws_s3_bucket.deployment "$BUCKET_NAME" || echo "Bucket may already be in Terraform state"
+            echo "bucket_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Bucket does not exist or you don't have access to it."
+            echo "bucket_exists=false" >> $GITHUB_OUTPUT
+          fi
       - name: Terraform Apply
         run: |
           cd terraform

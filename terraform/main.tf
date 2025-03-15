@@ -213,6 +213,8 @@ resource "aws_s3_bucket" "deployment" {
   # Prevent accidental deletion of this bucket
   lifecycle {
     prevent_destroy = true
+    # Ignore changes to bucket name to handle already existing buckets
+    ignore_changes = [bucket]
   }
 }
 
