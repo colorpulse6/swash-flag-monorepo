@@ -1,22 +1,15 @@
+# Output definitions for the SwashFlag infrastructure
+
 output "vpc_id" {
   description = "ID of the VPC"
-  value       = module.networking.vpc_id
+  value       = aws_vpc.main.id
 }
 
-output "db_endpoint" {
-  description = "Endpoint of the database instance"
-  value       = module.database.db_instance_endpoint
-}
+# Removing db_endpoint output as there's no database module or resource
 
-output "backend_url" {
-  description = "URL of the deployed backend"
-  value       = module.backend.backend_url
-}
+# Removing backend_url output as there's no backend module
 
-output "frontend_url" {
-  description = "URL of the frontend"
-  value       = module.frontend.frontend_url
-}
+# Removing frontend_url output as there's no frontend module
 
 output "app_public_ip" {
   description = "Public IP address of the EC2 instance"
@@ -41,4 +34,10 @@ output "ssh_connection_string" {
 output "app_url" {
   description = "URL of the application"
   value       = "http://${aws_instance.app.public_dns}"
+}
+
+# Adding API URL output that's used in the deployment workflow
+output "api_url" {
+  description = "URL of the API endpoint"
+  value       = "http://${aws_instance.app.public_ip}/api"
 }
