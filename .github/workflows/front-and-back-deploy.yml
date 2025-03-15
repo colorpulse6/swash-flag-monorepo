@@ -89,20 +89,6 @@ jobs:
           
           echo "Using Terraform workspace: $(terraform workspace show)"
       
-      - name: Terraform Plan
-        run: |
-          cd terraform
-          terraform plan \
-            -var="project_name=${{ env.PROJECT_NAME }}" \
-            -var="aws_region=${{ env.AWS_REGION }}" \
-            -var="vpc_cidr=10.0.0.0/16" \
-            -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-            -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-            -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-            -var="db_username=${{ secrets.DB_USERNAME }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}" \
-            -out=tfplan
-      
       - name: Check for existing S3 bucket
         id: check_bucket
         run: |
@@ -129,9 +115,24 @@ jobs:
             echo "Bucket does not exist or you don't have access to it."
             echo "bucket_exists=false" >> $GITHUB_OUTPUT
           fi
+      
+      - name: Terraform Plan
+        run: |
+          cd terraform
+          terraform plan \
+            -var="project_name=${{ env.PROJECT_NAME }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="vpc_cidr=10.0.0.0/16" \
+            -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
+            -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
+            -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
+            -var="db_username=${{ secrets.DB_USERNAME }}" \
+            -var="db_password=${{ secrets.DB_PASSWORD }}" \
+            -out=tfplan
+      
       - name: Terraform Apply
         id: terraform_apply
-        continue-on-error: true  # Don't fail the whole workflow if Terraform apply fails
+        continue-on-error: true  # Keep this to make workflow more resilient
         run: |
           cd terraform
           # Apply with lower parallelism to avoid race conditions
@@ -141,26 +142,10 @@ jobs:
         if: steps.terraform_apply.outcome == 'failure'
         run: |
           cd terraform
-          # Check if the error is specifically about the S3 bucket already existing
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          BUCKET_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-deployment"
           
-          echo "Terraform apply failed. Checking if it's due to bucket already existing..."
+          echo "Terraform apply failed. Attempting direct apply without using saved plan..."
           
-          # Force import the bucket resource if needed
-          echo "Attempting to forcibly import existing S3 bucket..."
-          terraform import \
-            -var="project_name=${{ env.PROJECT_NAME }}" \
-            -var="aws_region=${{ env.AWS_REGION }}" \
-            -var="vpc_cidr=10.0.0.0/16" \
-            -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-            -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-            -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-            -var="db_username=${{ secrets.DB_USERNAME }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}" \
-            aws_s3_bucket.deployment "$BUCKET_NAME" || true
-          # Try apply again, but without the S3 bucket (using target to skip it)
-          echo "Running targeted apply to skip problematic resources..."
+          # Run apply directly (not using the plan file)
           terraform apply \
             -parallelism=1 \
             -auto-approve \
@@ -171,10 +156,7 @@ jobs:
             -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
             -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
             -var="db_username=${{ secrets.DB_USERNAME }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}" \
-            -target="aws_instance.app" \
-            -target="aws_security_group.app" \
-            -target="aws_s3_bucket_versioning.deployment"
+            -var="db_password=${{ secrets.DB_PASSWORD }}"
       - name: Get deployment outputs
         id: terraform
         run: |
