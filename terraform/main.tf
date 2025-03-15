@@ -3,71 +3,188 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Networking module - must be created first
-module "networking" {
-  source          = "./modules/networking"
-  project_name    = var.project_name
-  vpc_cidr        = var.vpc_cidr
-  public_subnets  = var.public_subnets
-  private_subnets = var.private_subnets
-  azs             = var.azs
-  tags            = var.tags
+# Get the current Terraform workspace for environment
+locals {
+  # Default to dev if not running in Terraform Cloud/Enterprise
+  workspace_name = terraform.workspace == "default" ? "dev" : terraform.workspace
+  
+  # Define environment-specific settings
+  env_settings = {
+    dev = {
+      instance_type = "t2.micro"  # Free tier eligible
+      tags = merge(var.tags, {
+        Environment = "dev"
+      })
+    }
+    staging = {
+      instance_type = "t2.micro"  # Still using t2.micro for cost optimization
+      tags = merge(var.tags, {
+        Environment = "staging"
+      })
+    }
+    prod = {
+      instance_type = "t2.micro"  # For a real prod environment, consider t2.small or larger
+      tags = merge(var.tags, {
+        Environment = "prod"
+      })
+    }
+  }
+  
+  # Settings for current environment
+  current_env     = local.env_settings[local.workspace_name]
+  instance_type   = local.current_env.instance_type
+  resource_prefix = "${var.project_name}-${local.workspace_name}"
+  tags            = local.current_env.tags
 }
 
-# Create DB subnet group for database module
-resource "aws_db_subnet_group" "main" {
-  name       = "${var.project_name}-db-subnet-group"
-  subnet_ids = module.networking.private_subnet_ids
-  tags       = merge(var.tags, { Name = "${var.project_name}-db-subnet-group" })
+# Simple networking with a single VPC and two public subnets
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = merge(local.tags, { Name = "${local.resource_prefix}-vpc" })
 }
 
-# Database module
-module "database" {
-  source                = "./modules/database"
-  project_name          = var.project_name
-  db_allocated_storage  = var.db_allocated_storage
-  db_engine_version     = var.db_engine_version
-  db_instance_class     = var.db_instance_class
-  db_username           = var.db_username
-  db_password           = var.db_password
-  db_name               = var.db_name
-  db_security_group_id  = module.networking.db_security_group_id
-  db_subnet_group_name  = aws_db_subnet_group.main.name
-
-  # Pass only the parameters defined in the database module
-  multi_az                    = var.db_multi_az
-  backup_retention_period     = var.db_backup_retention_period
-  skip_final_snapshot         = var.db_skip_final_snapshot
-  storage_encrypted           = var.db_storage_encrypted
-  tags                        = var.tags
-  depends_on                  = [module.networking]
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags   = merge(local.tags, { Name = "${local.resource_prefix}-igw" })
 }
 
-# Backend module
-module "backend" {
-  source            = "./modules/backend"
-  project_name      = var.project_name
-  aws_region        = var.aws_region
-  backend_cpu       = var.backend_cpu
-  backend_memory    = var.backend_memory
-  backend_image     = var.backend_image
-  database_url      = "postgres://${var.db_username}:${var.db_password}@${module.database.db_instance_endpoint}/${var.db_name}"
-  vpc_id            = module.networking.vpc_id
-  private_subnet_ids = module.networking.private_subnet_ids
-  public_subnet_ids = module.networking.public_subnet_ids
-  client_url        = var.client_url
-  tags              = var.tags
-  depends_on = [module.database]
+resource "aws_subnet" "public" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+  
+  tags = merge(local.tags, { 
+    Name = "${local.resource_prefix}-public-subnet-${count.index + 1}"
+  })
 }
 
-# Frontend module - defined after backend to resolve circular dependency
-module "frontend" {
-  source                  = "./modules/frontend"
-  project_name            = var.project_name
-  domain_name             = var.frontend_domain_name
-  hosting_type            = var.frontend_hosting_type
-  cloudfront_price_class  = var.frontend_cloudfront_price_class
-  enable_waf              = var.frontend_enable_waf
-  api_endpoint            = module.backend.backend_url
-  tags                    = var.tags
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  
+  tags = merge(local.tags, { Name = "${local.resource_prefix}-public-rt" })
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# Security group for the EC2 instance
+resource "aws_security_group" "app" {
+  name        = "${local.resource_prefix}-app-sg"
+  description = "Security group for the application"
+  vpc_id      = aws_vpc.main.id
+
+  # HTTP access
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # HTTPS access
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  # SSH access
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]  # Consider restricting to your IP for production
+  }
+
+  # All outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.tags, { Name = "${local.resource_prefix}-app-sg" })
+}
+
+# EC2 instance running both frontend and backend
+resource "aws_instance" "app" {
+  ami                    = var.ami_id
+  instance_type          = local.instance_type
+  subnet_id              = aws_subnet.public[0].id
+  vpc_security_group_ids = [aws_security_group.app.id]
+  key_name               = var.key_name
+  
+  user_data = <<-EOF
+    #!/bin/bash
+    # Update packages
+    apt-get update -y
+    apt-get install -y docker.io nginx awscli
+
+    # Start Docker service
+    systemctl start docker
+    systemctl enable docker
+    
+    # Configure Nginx as reverse proxy
+    cat > /etc/nginx/sites-available/default << 'EOL'
+    server {
+      listen 80;
+      
+      # Environment banner for non-production environments
+      ${local.workspace_name != "prod" ? "add_header X-Environment \"${local.workspace_name}\";" : ""}
+      
+      location /api/ {
+        proxy_pass http://localhost:4000/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+      }
+      
+      location / {
+        root /var/www/html;
+        try_files $uri $uri/ /index.html;
+      }
+    }
+    EOL
+    
+    systemctl restart nginx
+    
+    # Add environment tag to the instance metadata
+    mkdir -p /var/www/html/env
+    echo '{"environment": "${local.workspace_name}"}' > /var/www/html/env/info.json
+  EOF
+  
+  tags = merge(local.tags, { 
+    Name = "${local.resource_prefix}-app" 
+  })
+}
+
+# S3 bucket for storing frontend assets and deployment scripts
+resource "aws_s3_bucket" "deployment" {
+  bucket = "${local.resource_prefix}-deployment"
+  tags   = local.tags
+}
+
+# Output the instance public IP
+output "app_public_ip" {
+  value = aws_instance.app.public_ip
+}
+
+output "s3_deployment_bucket" {
+  value = aws_s3_bucket.deployment.bucket
 }

@@ -1,0 +1,216 @@
+name: Deploy Application
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  AWS_REGION: us-west-2
+  PROJECT_NAME: swashflag
+  TF_VERSION: 1.5.0
+
+jobs:
+  # Determine environment based on trigger
+  set-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+    steps:
+      - id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ $GITHUB_REF == refs/tags/v* ]]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          elif [[ $GITHUB_REF == refs/heads/main ]]; then
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+  
+  # Deployment job
+  deploy:
+    needs: set-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.set-environment.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'pnpm'
+      
+      - name: Install dependencies
+        run: |
+          npm install -g pnpm
+          pnpm install
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+      
+      - name: Select Terraform Workspace
+        run: |
+          cd terraform
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          
+          # Check if workspace exists
+          if terraform workspace list | grep -q "$ENVIRONMENT"; then
+            terraform workspace select $ENVIRONMENT
+          else
+            terraform workspace new $ENVIRONMENT
+          fi
+          
+          echo "Using Terraform workspace: $(terraform workspace show)"
+      
+      - name: Terraform Plan
+        run: |
+          cd terraform
+          terraform plan \
+            -var="project_name=${{ env.PROJECT_NAME }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="vpc_cidr=10.0.0.0/16" \
+            -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
+            -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
+            -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
+            -out=tfplan
+      
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve tfplan
+      
+      - name: Get deployment outputs
+        id: terraform
+        run: |
+          cd terraform
+          APP_IP=$(terraform output -raw app_public_ip)
+          S3_BUCKET=$(terraform output -raw s3_deployment_bucket)
+          echo "app_ip=$APP_IP" >> $GITHUB_OUTPUT
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          # Generate API URL for frontend
+          echo "api_url=http://$APP_IP/api" >> $GITHUB_OUTPUT
+      
+      - name: Build applications with dynamic config
+        run: |
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          API_URL=${{ steps.terraform.outputs.api_url }}
+          echo "Building for environment: $ENVIRONMENT with API URL: $API_URL"
+          
+          # Create or update frontend .env file with dynamic API URL
+          echo "VITE_API_URL=$API_URL" > apps/frontend/.env.$ENVIRONMENT.local
+          echo "VITE_APP_ENV=$ENVIRONMENT" >> apps/frontend/.env.$ENVIRONMENT.local
+          echo "VITE_APP_STAGE=$ENVIRONMENT" >> apps/frontend/.env.$ENVIRONMENT.local
+          
+          # Display the environment file for debugging
+          echo "Using frontend environment config:"
+          cat apps/frontend/.env.$ENVIRONMENT.local
+          
+          # Pass environment to build process
+          pnpm run build
+      
+      - name: Build and package backend
+        run: |
+          cd apps/backend
+          # Include environment in container tag
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          docker build -t swashflag-backend:$ENVIRONMENT .
+          docker save swashflag-backend:$ENVIRONMENT > backend.tar
+      
+      - name: Upload backend to S3
+        run: |
+          aws s3 cp apps/backend/backend.tar s3://${{ steps.terraform.outputs.s3_bucket }}/backend.tar
+      
+      - name: Upload frontend to S3
+        run: |
+          aws s3 cp apps/frontend/dist/ s3://${{ steps.terraform.outputs.s3_bucket }}/frontend/ --recursive
+      
+      - name: Deploy to EC2
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          API_URL=${{ steps.terraform.outputs.api_url }}
+          
+          # Deploy script
+          cat > deploy.sh << 'EOL'
+          #!/bin/bash
+          
+          # Environment setting
+          ENVIRONMENT="${ENVIRONMENT}"
+          API_URL="${API_URL}"
+          echo "Deploying to environment: $ENVIRONMENT with API URL: $API_URL"
+          
+          # Download artifacts from S3
+          aws s3 cp s3://${{ steps.terraform.outputs.s3_bucket }}/backend.tar .
+          aws s3 cp s3://${{ steps.terraform.outputs.s3_bucket }}/frontend/ /var/www/html/ --recursive
+          
+          # Create environment indicator file
+          echo "ENVIRONMENT=$ENVIRONMENT" > /var/www/html/env-config.js
+          
+          # Create runtime config for frontend to access API
+          cat > /var/www/html/runtime-config.js << CFGEOF
+          // This file is auto-generated during deployment - DO NOT EDIT MANUALLY
+          window.RUNTIME_CONFIG = {
+            API_URL: "$API_URL",
+            ENVIRONMENT: "$ENVIRONMENT",
+            BUILD_TIME: "$(date)"
+          };
+          CFGEOF
+          
+          # Ensure runtime config is loaded by adding to index.html if not already there
+          if ! grep -q "runtime-config.js" /var/www/html/index.html; then
+            sed -i 's/<head>/<head>\n    <script src="\/runtime-config.js"><\/script>/' /var/www/html/index.html
+          fi
+          
+          # Load and run backend container
+          docker load < backend.tar
+          
+          # Stop existing container if it exists
+          docker stop swashflag-backend || true
+          docker rm swashflag-backend || true
+          
+          # Run the new container with environment-specific configuration
+          docker run -d --name swashflag-backend -p 4000:4000 \
+            -e PORT=4000 \
+            -e NODE_ENV=production \
+            -e ENVIRONMENT=$ENVIRONMENT \
+            swashflag-backend:$ENVIRONMENT
+          EOL
+          
+          # Substitute actual environment value and API URL
+          sed -i "s|\${ENVIRONMENT}|$ENVIRONMENT|g" deploy.sh
+          sed -i "s|\${API_URL}|$API_URL|g" deploy.sh
+          
+          # Copy and execute the deployment script on the EC2 instance
+          scp -o StrictHostKeyChecking=no deploy.sh ubuntu@${{ steps.terraform.outputs.app_ip }}:/tmp/
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ steps.terraform.outputs.app_ip }} "chmod +x /tmp/deploy.sh && sudo /tmp/deploy.sh" 

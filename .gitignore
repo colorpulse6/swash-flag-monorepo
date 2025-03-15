@@ -1,6 +1,9 @@
 node_modules
+
+# IDE specific files
 .idea
 .DS_Store
+.vscode/
 dist
 
 # Environment files
@@ -47,4 +50,5 @@ terraform.rc
 # Ignore lock files
 .terraform.lock.hcl
 
-apply-variables-to-gh-secrets.sh
+# Terraform example variables
+terraform/terraform.tfvars.example

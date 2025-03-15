@@ -1,269 +1,218 @@
-# Swash Flag
+# SwashFlag 
 
-A modern web application built with React frontend and containerized backend, managed in a Turborepo monorepo structure with infrastructure as code using Terraform.
+This repository contains a minimalist AWS deployment strategy for a full-stack web application. The infrastructure is designed to showcase AWS knowledge while minimizing costs.
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
-This application uses a modern cloud-native architecture:
+The simplified architecture consists of:
 
-- **Frontend**: React application built with Vite, hosted on AWS S3
-- **Backend**: Node.js API running in Docker containers, hosted in AWS
-- **Database**: PostgreSQL with Prisma ORM
-- **Infrastructure**: Defined using Terraform (IaC)
-- **CI/CD**: Automated deployments via GitHub Actions
+1. **Single EC2 Instance (t2.micro)**: Hosts both frontend and backend applications
+   - Nginx as a reverse proxy to route traffic
+   - Docker for running the backend service
+   - Static frontend files served directly from Nginx
 
-## 📂 Repository Structure
+2. **Simple VPC Setup**:
+   - 1 VPC with public subnets across 2 availability zones
+   - Internet Gateway for public internet access
+   - Security group with necessary rules
+
+3. **S3 Bucket**: For deployment artifacts and file storage
+
+4. **CI/CD Pipeline**: GitHub Actions workflow for automated deployment
+
+5. **Multi-Environment Support**:
+   - Uses Terraform workspaces for environment isolation
+   - Supports dev, staging, and production environments
+   - Environment-specific configuration and deployment
+
+## GitHub Secrets Configuration
+
+This project requires the following GitHub secrets to be configured for successful deployment:
+
+### Required Secrets
+
+1. **`AWS_ACCESS_KEY_ID`** (Required)
+   - Your AWS IAM user access key
+   - The IAM user must have permissions to create EC2, VPC, and S3 resources
+
+2. **`AWS_SECRET_ACCESS_KEY`** (Required)
+   - The secret key associated with your AWS access key ID
+
+3. **`SSH_PRIVATE_KEY`** (Required)
+   - Your private SSH key for connecting to the EC2 instance
+   - Include the entire key including BEGIN/END lines
+
+### Optional Secrets
+
+4. **`EC2_KEY_NAME`** (Optional but recommended)
+   - The name of your EC2 key pair in the AWS region
+   - Required for SSH access to your instance
+   - Example: `my-aws-keypair`
+
+5. **`AMI_ID`** (Optional)
+   - Custom AMI ID if you want to use a different base image
+   - Defaults to Ubuntu 22.04 LTS in us-west-2 if not provided
+
+### Setting Up Secrets
+
+1. Go to your GitHub repository
+2. Click on "Settings" tab
+3. In the left sidebar, click "Secrets and variables" > "Actions"
+4. Click "New repository secret" and add each secret with its value
+
+## Cost Optimization
+
+This infrastructure is specifically designed to minimize AWS costs while still showcasing AWS services:
+
+- Uses only free tier eligible resources (t2.micro instance)
+- Eliminates expensive managed services (RDS, ECS, etc.)
+- Consolidates frontend and backend on a single instance
+- Minimizes data transfer costs
+- Avoids costly multi-AZ deployments
+- Shares infrastructure code across environments with minimal duplication
+
+## Prerequisites
+
+1. AWS account with appropriate permissions
+2. GitHub repository with necessary secrets (see GitHub Secrets Configuration section)
+3. AWS EC2 Key Pair for SSH access
+
+## Multi-Environment Strategy
+
+The infrastructure supports three environments:
+
+- **Development (dev)**: For active development and testing
+  - Deployed automatically from the `develop` branch
+  - Prefix: `swashflag-dev`
+
+- **Staging (staging)**: For pre-production validation
+  - Deployed automatically from the `main` branch
+  - Prefix: `swashflag-staging`
+
+- **Production (prod)**: For live application
+  - Deployed when a version tag is pushed (e.g., `v1.0.0`)
+  - Prefix: `swashflag-prod`
+
+Each environment is isolated using Terraform workspaces and has:
+- Its own set of AWS resources
+- Environment-specific resource naming
+- Environment-specific configuration
+- Visual indicators in the UI to distinguish environments
+
+## Deployment Instructions
+
+### Manual Deployment to a Specific Environment
+
+1. Navigate to the terraform directory:
+   ```
+   cd terraform
+   ```
+
+2. Initialize Terraform:
+   ```
+   terraform init
+   ```
+
+3. Select the target environment workspace:
+   ```
+   terraform workspace select dev  # or staging or prod
+   ```
+   (Create it first with `terraform workspace new dev` if it doesn't exist)
+
+4. Apply the Terraform configuration:
+   ```
+   terraform apply
+   ```
+
+5. Build and deploy your applications to the EC2 instance
+
+### Automated Deployment via GitHub Actions
+
+The GitHub Actions workflow automatically determines the target environment:
+
+1. **Development Environment**:
+   - Trigger: Push to `develop` branch
+   - Command: `git push origin develop`
+
+2. **Staging Environment**:
+   - Trigger: Push to `main` branch
+   - Command: `git push origin main`
+
+3. **Production Environment**:
+   - Trigger: Push a version tag
+   - Command: `git tag v1.0.0 && git push origin v1.0.0`
+
+4. **Manual Deployment**:
+   - Trigger: Manual workflow dispatch
+   - Select the environment in GitHub Actions UI
+
+The workflow will:
+- Build the frontend and backend applications with environment-specific configuration
+- Deploy the infrastructure to the appropriate environment
+- Package and deploy the applications to the EC2 instance
+
+## Local Development
+
+This repository is set up as a monorepo using PNPM workspaces:
+
+1. Install dependencies:
+   ```
+   pnpm install
+   ```
+
+2. Run development servers:
+   ```
+   pnpm run dev
+   ```
+
+## Project Structure
 
 ```
 .
-├── .github/                  # GitHub Actions workflows
-│   └── workflows/            # CI/CD pipeline definitions
-├── apps/                     # Application code (Turborepo)
-│   ├── frontend/             # React frontend application
-│   │   ├── src/              # Frontend source code
-│   │   ├── public/           # Static assets
-│   │   ├── .env.example      # Environment variables example
-│   │   └── vite.config.ts    # Vite configuration
-│   └── backend/              # Node.js backend application
-│       ├── src/              # Backend source code
-│       ├── prisma/           # Database schema and migrations
-│       ├── Dockerfile        # Container definition
-│       └── .env.example      # Environment variables example
-├── packages/                 # Shared packages (Turborepo)
-│   ├── eslint-config/        # Shared ESLint configuration
-│   ├── tsconfig/             # Shared TypeScript configuration
-│   └── ui/                   # Shared UI component library
-├── terraform/                # Infrastructure as Code
-│   ├── modules/              # Terraform modules
-│   │   ├── frontend/         # S3 bucket configuration
-│   │   ├── backend/          # ECR and ECS configuration
-│   │   ├── database/         # RDS configuration
-│   │   └── networking/       # VPC, subnets, and security groups
-│   ├── main.tf               # Main Terraform configuration
-│   ├── variables.tf          # Input variables
-│   └── outputs.tf            # Output variables
-├── turbo.json                # Turborepo configuration
-├── package.json              # Root package.json for monorepo
-└── README.md                 # This file
+├── .github/workflows      # GitHub Actions workflows
+│   └── front-and-back-deploy.yml         # Multi-environment deployment workflow
+├── apps                   # Application code
+│   ├── backend            # Backend application (Node.js)
+│   └── frontend           # Frontend application (React)
+├── packages               # Shared packages
+└── terraform              # Infrastructure as Code
+    ├── main.tf            # Main Terraform configuration with environment support
+    ├── variables.tf       # Variable definitions
+    └── terraform.tfvars   # Default variable values
 ```
 
-## 🚀 Deployment Structure
+## Extending the Infrastructure
 
-The application is deployed to AWS with the following architecture:
+This minimalist infrastructure can be extended to include more AWS services as needed:
 
-### Frontend
-- Hosted in an S3 bucket
-- Served through CloudFront CDN (optional)
-- Deployed automatically via GitHub Actions when changes are pushed to the main branch
+1. Add RDS for a managed database
+2. Implement S3 + CloudFront for static content delivery
+3. Add Auto Scaling for high availability
+4. Implement ECS/Fargate for container orchestration
 
-### Backend
-- Containerized using Docker
-- Container images stored in Amazon ECR
-- Deployed as containers in Amazon ECS/Fargate
-- Connected to a PostgreSQL database in Amazon RDS
-- Deployed automatically via GitHub Actions
-
-### Infrastructure
-- Defined and managed using Terraform
-- State file stored in an S3 bucket
-- Key resources:
-  - VPC and networking components
-  - S3 bucket for frontend hosting
-  - ECR repository for backend container images
-  - ECS/Fargate for running containers
-  - RDS for PostgreSQL database
-
-## 🔧 Local Development Setup
-
-### Prerequisites
-
-- Node.js (v16 or later)
-- Docker and Docker Compose
-- Git
-- AWS CLI (for deployment)
-- Terraform CLI (for infrastructure management)
-
-### Setting Up the Development Environment
-
-1. **Clone the repository**
-
-```bash
-git clone https://github.com/yourusername/your-repo-name.git
-cd your-repo-name
-```
-
-2. **Install dependencies**
-
-```bash
-# Install root dependencies
-npm install
-
-# Install all workspace dependencies
-npm run install:all
-```
-
-3. **Set up environment variables**
-
-```bash
-# Frontend
-cp apps/frontend/.env.example apps/frontend/.env.local
-
-# Backend
-cp apps/backend/.env.example apps/backend/.env
-```
-
-4. **Start the development database**
-
-```bash
-# Start a local PostgreSQL instance
-docker-compose up -d db
-```
-
-5. **Run database migrations**
-
-```bash
-# Navigate to backend
-cd apps/backend
-
-# Run Prisma migrations
-npx prisma migrate dev
-```
-
-6. **Start the development servers**
-
-```bash
-# From the root directory
-npm run dev
-```
-
-This will start:
-- Frontend: http://localhost:3000
-- Backend: http://localhost:8000
-- Storybook (UI components): http://localhost:6006 (if configured)
-
-## 🧪 Testing
-
-```bash
-# Run all tests
-npm run test
-
-# Run frontend tests
-npm run test:frontend
-
-# Run backend tests
-npm run test:backend
-```
-
-## 📦 Building for Production
-
-```bash
-# Build all packages and apps
-npm run build
-
-# Build only frontend
-npm run build:frontend
-
-# Build only backend
-npm run build:backend
-```
-
-## 🛠️ Infrastructure Management
-
-### Initialize Terraform
-
-```bash
-cd terraform
-terraform init
-```
-
-### Plan Infrastructure Changes
-
-```bash
-terraform plan -out=tfplan
-```
-
-### Apply Infrastructure Changes
-
-```bash
-terraform apply tfplan
-```
-
-### Destroy Infrastructure (Use with Caution)
-
-```bash
-terraform destroy
-```
-
-## 🔄 CI/CD Pipelines
-
-GitHub Actions workflows automatically:
-
-1. Run tests on pull requests
-2. Deploy the frontend to S3 when changes are pushed to main
-3. Build and push the backend Docker image to ECR when changes are pushed to main
-
-## 📝 Environment Variables
-
-### Frontend (.env.local)
-
-```
-VITE_API_URL=http://localhost:8000/api
-VITE_AUTH_DOMAIN=your-auth-domain
-VITE_AUTH_CLIENT_ID=your-auth-client-id
-```
-
-### Backend (.env)
-
-```
-# Database
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/app
-
-# Authentication
-JWT_SECRET=your-jwt-secret
-
-# AWS (for production)
-AWS_REGION=us-east-1
-S3_BUCKET=your-s3-bucket
-
-# API Configuration
-PORT=8000
-NODE_ENV=development
-```
-
-## 📚 Technology Stack
-
-### Frontend
-- React 18+
-- TypeScript
-- Vite for build tooling
-- Tailwind CSS for styling
-- React Router for routing
-- GraphQL client (Apollo/Relay)
-
-### Backend
-- Node.js
-- TypeScript
-- Express/Fastify
-- Prisma ORM
-- PostgreSQL
-- GraphQL API
-- Docker
-
-### DevOps
-- Turborepo for monorepo management
-- Docker for containerization
-- Terraform for infrastructure as code
-- GitHub Actions for CI/CD
-- AWS (S3, ECR, ECS, RDS)
-
-## 👨‍💻 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Application Overview
+
+**SwashFlag** is a full-stack web application designed to manage feature flags efficiently. It provides a user-friendly interface for developers and product managers to toggle features on and off without deploying new code. This capability is crucial for A/B testing, gradual feature rollouts, and quick rollbacks.
+
+### Key Features
+
+- **Feature Management**: Easily create, update, and delete feature flags.
+- **User Authentication**: Secure login and signup functionality.
+- **API Token Management**: Generate and manage API tokens for secure access.
+- **Environment-Specific Configurations**: Automatically adapts to different environments (development, staging, production) using dynamic configuration.
+
+### Technology Stack
+
+- **Frontend**: Built with modern JavaScript frameworks, providing a responsive and intuitive user interface.
+- **Backend**: Node.js-based API server, handling authentication, feature flag operations, and more.
+- **Infrastructure**: Deployed on AWS using a cost-effective architecture, leveraging EC2, S3, and Terraform for infrastructure as code.
+
+### Use Cases
+
+- **A/B Testing**: Enable or disable features for specific user segments to test different versions of a feature.
+- **Gradual Rollouts**: Roll out new features to a small percentage of users before a full release.
+- **Quick Rollbacks**: Instantly disable a feature if issues are detected, without redeploying the application.

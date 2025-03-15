@@ -1,0 +1,11 @@
+# Project configuration
+project_name     = "swashflag"
+aws_region       = "us-west-2"
+
+# Network configuration
+vpc_cidr         = "10.0.0.0/16"
+availability_zones = ["us-west-2a", "us-west-2b"]
+
+# EC2 configuration
+# Uncomment and set to your EC2 key pair name
+# key_name         = "your-key-pair-name" 

@@ -1,4 +1,5 @@
 import { GenerateApiTokenResponse } from './types.ts';
+import apiConfig from '../utils/api-config';
 
 interface AuthResponse {
   token: string;
@@ -9,7 +10,7 @@ interface AuthResponse {
 }
 
 class AuthApi {
-  private API_URL = `${import.meta.env.VITE_API_URL}/api/auth`;
+  private API_URL = `${apiConfig.apiUrl}/api/auth`;
 
   async login(email: string, password: string): Promise<AuthResponse> {
     const response = await fetch(`${this.API_URL}/login`, {
