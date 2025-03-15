@@ -110,8 +110,9 @@ jobs:
         id: terraform
         run: |
           cd terraform
-          APP_IP=$(terraform output -raw app_public_ip)
-          S3_BUCKET=$(terraform output -raw s3_deployment_bucket)
+          # Redirect stderr to /dev/null to prevent debug messages mixing with output
+          APP_IP=$(terraform output -raw app_public_ip 2>/dev/null)
+          S3_BUCKET=$(terraform output -raw s3_deployment_bucket 2>/dev/null)
           echo "app_ip=$APP_IP" >> $GITHUB_OUTPUT
           echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
           # Generate API URL for frontend
