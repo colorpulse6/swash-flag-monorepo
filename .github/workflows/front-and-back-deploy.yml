@@ -9,10 +9,9 @@ on:
       environment:
         description: 'Environment to deploy to'
         required: true
-        default: 'dev'
+        default: 'staging'
         type: choice
         options:
-          - dev
           - staging
           - prod
 
@@ -37,7 +36,7 @@ jobs:
           elif [[ $GITHUB_REF == refs/heads/main ]]; then
             echo "environment=staging" >> $GITHUB_OUTPUT
           else
-            echo "environment=dev" >> $GITHUB_OUTPUT
+            echo "environment=staging" >> $GITHUB_OUTPUT
           fi
   
   # Deployment job
@@ -70,6 +69,27 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       
+      - name: List existing VPCs for cleanup
+        run: |
+          echo "Checking AWS VPC limits and existing resources..."
+
+          # List all VPCs with details
+          echo "📊 Current VPCs in your account:"
+          aws ec2 describe-vpcs --query "Vpcs[*].{VpcId:VpcId,CidrBlock:CidrBlock,IsDefault:IsDefault,Name:Tags[?Key=='Name'].Value|[0],Environment:Tags[?Key=='Environment'].Value|[0]}" --output table
+
+          # Count VPCs
+          VPC_COUNT=$(aws ec2 describe-vpcs --query "length(Vpcs)" --output text)
+          echo "You have $VPC_COUNT VPCs in this region (limit is typically 5 per region)"
+
+          if [ "$VPC_COUNT" -ge "5" ]; then
+            echo "⚠️ You've reached the VPC limit for this region. Consider deleting unused VPCs."
+            echo "To delete an unused VPC, use the following AWS CLI command:"
+            echo "aws ec2 delete-vpc --vpc-id <vpc-id>"
+            echo ""
+            echo "NOTE: You must first delete all resources within the VPC (EC2 instances, subnets, etc.)"
+            echo "The AWS Console is often easier for VPC cleanup: https://console.aws.amazon.com/vpc/"
+          fi
+
       - name: Terraform Init
         run: |
           cd terraform
@@ -248,17 +268,44 @@ jobs:
             -var="db_password=${{ secrets.DB_PASSWORD }}" || echo "Unable to apply Terraform changes. Check AWS VPC limits."
       - name: Get deployment outputs
         id: terraform
+        continue-on-error: true
         run: |
           cd terraform
-          # Redirect stderr to /dev/null to prevent debug messages mixing with output
-          APP_IP=$(terraform output -raw app_public_ip 2>/dev/null)
-          S3_BUCKET=$(terraform output -raw s3_deployment_bucket 2>/dev/null)
-          echo "app_ip=$APP_IP" >> $GITHUB_OUTPUT
-          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
-          # Generate API URL for frontend
-          echo "api_url=http://$APP_IP/api" >> $GITHUB_OUTPUT
+          # Check if our deployment succeeded by testing if outputs exist
+          if terraform output -json > /dev/null 2>&1; then
+            # Outputs exist, get them normally
+            APP_IP=$(terraform output -raw app_public_ip 2>/dev/null || echo "")
+            S3_BUCKET=$(terraform output -raw s3_deployment_bucket 2>/dev/null || echo "")
+            
+            if [ -n "$APP_IP" ] && [ -n "$S3_BUCKET" ]; then
+              echo "✅ Successfully retrieved terraform outputs"
+              echo "app_ip=$APP_IP" >> $GITHUB_OUTPUT
+              echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+              echo "api_url=http://$APP_IP/api" >> $GITHUB_OUTPUT
+              echo "deployment_success=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ Some terraform outputs are missing"
+              echo "deployment_success=false" >> $GITHUB_OUTPUT
+              exit 0  # Exit without error to continue workflow
+            fi
+          else
+            echo "⚠️ No terraform outputs available - deployment may have failed"
+            echo "deployment_success=false" >> $GITHUB_OUTPUT
+            exit 0  # Exit without error to continue workflow
+          fi
+      
+      - name: Notify deployment issues
+        if: steps.terraform.outputs.deployment_success != 'true'
+        run: |
+          echo "::warning::Infrastructure deployment failed or was incomplete. The workflow will exit."
+          echo "To fix this issue:"
+          echo "1. Delete unused VPCs in the AWS Console"
+          echo "2. Request a VPC limit increase from AWS Support"
+          echo "3. Try using a different AWS region"
+          exit 1  # Fail workflow here
       
       - name: Build applications with dynamic config
+        if: steps.terraform.outputs.deployment_success == 'true'
         run: |
           ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
           API_URL=${{ steps.terraform.outputs.api_url }}
@@ -277,6 +324,7 @@ jobs:
           pnpm run build
       
       - name: Build and package backend
+        if: steps.terraform.outputs.deployment_success == 'true'
         run: |
           cd apps/backend
           # Include environment in container tag
@@ -285,14 +333,17 @@ jobs:
           docker save swashflag-backend:$ENVIRONMENT > backend.tar
       
       - name: Upload backend to S3
+        if: steps.terraform.outputs.deployment_success == 'true'
         run: |
           aws s3 cp apps/backend/backend.tar s3://${{ steps.terraform.outputs.s3_bucket }}/backend.tar
       
       - name: Upload frontend to S3
+        if: steps.terraform.outputs.deployment_success == 'true'
         run: |
           aws s3 cp apps/frontend/dist/ s3://${{ steps.terraform.outputs.s3_bucket }}/frontend/ --recursive
       
       - name: Deploy to EC2
+        if: steps.terraform.outputs.deployment_success == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
@@ -340,7 +391,7 @@ jobs:
             sed -i 's/<head>/<head>\n    <script src="\/runtime-config.js"><\/script>/' /var/www/html/index.html
           fi
           
-          # Database setup - only on the database host instance (dev environment)
+          # Database setup - only on the database host instance (staging environment)
           if [ "$IS_DB_HOST" = "true" ]; then
             echo "This instance is the database host. Setting up PostgreSQL..."
             
@@ -374,10 +425,10 @@ jobs:
             systemctl restart postgresql
             
             # Create database users and databases for all environments
-            echo "Setting up database users and databases for all environments..."
+            echo "Setting up database users and databases for environments..."
             
             # Loop through environments and create users/databases
-            for ENV in "dev" "staging" "prod"; do
+            for ENV in "staging" "prod"; do
               ENV_DB_NAME="swash_flag_${ENV}"
               
               # Create user if it doesn't exist (use the same DB_USERNAME for simplicity)
