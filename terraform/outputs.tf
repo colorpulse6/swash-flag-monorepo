@@ -36,8 +36,19 @@ output "app_url" {
   value       = "http://${aws_instance.app.public_dns}"
 }
 
-# Adding API URL output that's used in the deployment workflow
+# Add API URL output that's used in the deployment workflow
 output "api_url" {
   description = "URL of the API endpoint"
   value       = "http://${aws_instance.app.public_ip}/api"
+}
+
+# Add database host outputs
+output "is_db_host" {
+  description = "Whether this instance hosts the shared database"
+  value       = local.is_db_host
+}
+
+output "shared_db_host" {
+  description = "Hostname or IP of the shared database"
+  value       = local.shared_db_host
 }

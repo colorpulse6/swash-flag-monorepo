@@ -53,12 +53,39 @@ This project requires the following GitHub secrets to be configured for successf
    - Custom AMI ID if you want to use a different base image
    - Defaults to Ubuntu 22.04 LTS in us-west-2 if not provided
 
+### Database Configuration Secrets
+
+6. **`DB_USERNAME`** (Required)
+   - Username for the PostgreSQL database
+   - Example: `swashflag_user`
+
+7. **`DB_PASSWORD`** (Required)
+   - Password for the PostgreSQL database user
+   - Should be a secure, random password
+   - Example: Generate with: `openssl rand -base64 16`
+
 ### Setting Up Secrets
 
 1. Go to your GitHub repository
 2. Click on "Settings" tab
 3. In the left sidebar, click "Secrets and variables" > "Actions"
 4. Click "New repository secret" and add each secret with its value
+
+### Setting Up Environment-Specific Secrets
+
+For proper environment isolation, this project uses GitHub Environments to store environment-specific secrets:
+
+1. Go to your GitHub repository
+2. Click on "Settings" tab
+3. In the left sidebar, click "Environments"
+4. Create three environments: `dev`, `staging`, and `prod`
+5. For each environment, add the following secrets:
+   - `DB_USERNAME`: Environment-specific database username (e.g., `swashflag_dev_user` for dev)
+   - `DB_PASSWORD`: Environment-specific secure password
+   - `JWT_SECRET`: Environment-specific JWT secret for authentication
+   - `ENCRYPTION_KEY`: Environment-specific encryption key
+
+This ensures each environment has its own set of credentials and secrets, improving security and isolation.
 
 ## Cost Optimization
 
@@ -216,3 +243,23 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **A/B Testing**: Enable or disable features for specific user segments to test different versions of a feature.
 - **Gradual Rollouts**: Roll out new features to a small percentage of users before a full release.
 - **Quick Rollbacks**: Instantly disable a feature if issues are detected, without redeploying the application.
+
+## Shared Database Strategy
+
+To optimize costs while maintaining proper environment isolation, this project uses a shared database strategy:
+
+1. **Single Database Host**: The `dev` environment hosts a PostgreSQL database server that is used by all environments.
+   - Reduces costs by running only one database instance
+   - All database connections are secured within the VPC
+
+2. **Environment-Specific Databases**: While sharing the same database server, each environment has its own dedicated database:
+   - `swash_flag_dev` for development
+   - `swash_flag_staging` for staging
+   - `swash_flag_prod` for production
+
+3. **Proper Isolation**: Each environment is fully isolated from others:
+   - Separate EC2 instances for each environment
+   - Individual S3 buckets for deployment artifacts
+   - Environment-specific databases on the shared database server
+
+This approach allows you to maintain a complete testing workflow (dev → staging → prod) while minimizing AWS costs by consolidating database resources.

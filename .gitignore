@@ -31,6 +31,10 @@ crash.log
 *.tfvars
 *.tfvars.json
 
+# But include example files
+!*.tfvars.example
+!terraform.tfvars.example
+
 # Exclude override files
 override.tf
 override.tf.json

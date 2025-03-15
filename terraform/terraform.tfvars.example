@@ -1,11 +1,27 @@
-# Project configuration
-project_name     = "swashflag"
-aws_region       = "us-west-2"
+# Example terraform.tfvars file
+# Copy this file to terraform.tfvars and fill in your values
+# DO NOT commit terraform.tfvars to version control
 
-# Network configuration
-vpc_cidr         = "10.0.0.0/16"
-availability_zones = ["us-west-2a", "us-west-2b"]
+# Project settings
+project_name = "swashflag"
+aws_region   = "us-west-2"
 
-# EC2 configuration
-# Uncomment and set to your EC2 key pair name
-# key_name         = "your-key-pair-name" 
+# Network settings
+vpc_cidr            = "10.0.0.0/16"
+availability_zones  = ["us-west-2a", "us-west-2b"]
+
+# EC2 settings
+ami_id   = "ami-0efcece6bed30fd98"  # Ubuntu 22.04 LTS
+key_name = "your-ssh-key-name"      # Your EC2 key pair name
+
+# Database settings - KEEP THESE SECRET
+# DO NOT commit actual values to version control
+# Instead, use environment variables or GitHub secrets
+db_username = "REPLACE_WITH_SECURE_USERNAME"
+db_password = "REPLACE_WITH_SECURE_PASSWORD"
+
+# Tags
+tags = {
+  ManagedBy = "Terraform"
+  Project   = "SwashFlag"
+} 

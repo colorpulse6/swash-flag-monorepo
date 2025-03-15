@@ -12,20 +12,38 @@ locals {
   env_settings = {
     dev = {
       instance_type = "t2.micro"  # Free tier eligible
+      db_port       = 5432  # Standard PostgreSQL port for dev
+      backups_enabled = false
+      is_db_host = true    # This environment hosts the shared database
+      shared_db_host = "localhost"  # Database is on the same instance
       tags = merge(var.tags, {
         Environment = "dev"
+        Tier = "development"
+        DatabaseHost = "true"
       })
     }
     staging = {
       instance_type = "t2.micro"  # Still using t2.micro for cost optimization
+      db_port       = 5432  # Standard PostgreSQL port for staging
+      backups_enabled = true
+      is_db_host = false   # Uses the database from dev environment
+      shared_db_host = "${var.project_name}-dev-app.${var.aws_region}.compute.internal"  # Connect to dev instance
       tags = merge(var.tags, {
         Environment = "staging"
+        Tier = "pre-production"
+        DatabaseHost = "false"
       })
     }
     prod = {
       instance_type = "t2.micro"  # For a real prod environment, consider t2.small or larger
+      db_port       = 5432  # Standard PostgreSQL port for prod
+      backups_enabled = true
+      is_db_host = false   # Uses the database from dev environment
+      shared_db_host = "${var.project_name}-dev-app.${var.aws_region}.compute.internal"  # Connect to dev instance
       tags = merge(var.tags, {
         Environment = "prod"
+        Tier = "production"
+        DatabaseHost = "false"
       })
     }
   }
@@ -33,6 +51,10 @@ locals {
   # Settings for current environment
   current_env     = local.env_settings[local.workspace_name]
   instance_type   = local.current_env.instance_type
+  db_port         = local.current_env.db_port
+  backups_enabled = local.current_env.backups_enabled
+  is_db_host      = local.current_env.is_db_host
+  shared_db_host  = local.current_env.shared_db_host
   resource_prefix = "${var.project_name}-${local.workspace_name}"
   tags            = local.current_env.tags
 }
@@ -74,7 +96,7 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
+  count          = 2  # Hardcode to 2 instead of using length(aws_subnet.public)
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
@@ -107,6 +129,15 @@ resource "aws_security_group" "app" {
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]  # Consider restricting to your IP for production
+  }
+  
+  # PostgreSQL access from within VPC
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]  # Allow only from within the VPC
+    description = "PostgreSQL access for shared database"
   }
 
   # All outbound traffic
@@ -178,4 +209,17 @@ resource "aws_instance" "app" {
 resource "aws_s3_bucket" "deployment" {
   bucket = "${local.resource_prefix}-deployment"
   tags   = local.tags
+  
+  # Prevent accidental deletion of this bucket
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Enable versioning on the S3 bucket
+resource "aws_s3_bucket_versioning" "deployment" {
+  bucket = aws_s3_bucket.deployment.id
+  versioning_configuration {
+    status = "Enabled"
+  }
 }

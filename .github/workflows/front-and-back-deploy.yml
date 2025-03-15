@@ -99,12 +99,15 @@ jobs:
             -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
             -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
             -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
+            -var="db_username=${{ secrets.DB_USERNAME }}" \
+            -var="db_password=${{ secrets.DB_PASSWORD }}" \
             -out=tfplan
       
       - name: Terraform Apply
         run: |
           cd terraform
-          terraform apply -auto-approve tfplan
+          # Apply with lower parallelism to avoid race conditions
+          terraform apply -parallelism=1 -auto-approve tfplan
       
       - name: Get deployment outputs
         id: terraform
@@ -168,6 +171,14 @@ jobs:
           # Environment setting
           ENVIRONMENT="${ENVIRONMENT}"
           API_URL="${API_URL}"
+          DB_USERNAME="${DB_USERNAME}"
+          DB_PASSWORD="${DB_PASSWORD}"
+          JWT_SECRET="${JWT_SECRET}"
+          ENCRYPTION_KEY="${ENCRYPTION_KEY}"
+          DB_NAME="swash_flag_${ENVIRONMENT}"
+          IS_DB_HOST="${IS_DB_HOST}"
+          SHARED_DB_HOST="${SHARED_DB_HOST}"
+          
           echo "Deploying to environment: $ENVIRONMENT with API URL: $API_URL"
           
           # Download artifacts from S3
@@ -192,6 +203,66 @@ jobs:
             sed -i 's/<head>/<head>\n    <script src="\/runtime-config.js"><\/script>/' /var/www/html/index.html
           fi
           
+          # Database setup - only on the database host instance (dev environment)
+          if [ "$IS_DB_HOST" = "true" ]; then
+            echo "This instance is the database host. Setting up PostgreSQL..."
+            
+            # Install PostgreSQL if not already installed
+            if ! command -v psql &> /dev/null; then
+              echo "Installing PostgreSQL..."
+              apt-get update
+              apt-get install -y postgresql postgresql-contrib
+            fi
+            
+            # Start PostgreSQL service
+            systemctl start postgresql
+            systemctl enable postgresql
+            
+            # Configure PostgreSQL to allow remote connections (needed for other environments to connect)
+            echo "Configuring PostgreSQL for remote connections..."
+            
+            # Backup the postgresql.conf file
+            cp /etc/postgresql/*/main/postgresql.conf /etc/postgresql/*/main/postgresql.conf.bak
+            
+            # Update the configuration to listen on all interfaces
+            sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" /etc/postgresql/*/main/postgresql.conf
+            
+            # Backup the pg_hba.conf file
+            cp /etc/postgresql/*/main/pg_hba.conf /etc/postgresql/*/main/pg_hba.conf.bak
+            
+            # Add a line to allow connections from the VPC CIDR
+            echo "host    all             all             10.0.0.0/16              md5" >> /etc/postgresql/*/main/pg_hba.conf
+            
+            # Restart PostgreSQL to apply changes
+            systemctl restart postgresql
+            
+            # Create database users and databases for all environments
+            echo "Setting up database users and databases for all environments..."
+            
+            # Loop through environments and create users/databases
+            for ENV in "dev" "staging" "prod"; do
+              ENV_DB_NAME="swash_flag_${ENV}"
+              
+              # Create user if it doesn't exist (use the same DB_USERNAME for simplicity)
+              sudo -u postgres psql -c "SELECT 1 FROM pg_roles WHERE rolname='$DB_USERNAME'" | grep -q 1 || \
+                sudo -u postgres psql -c "CREATE USER $DB_USERNAME WITH PASSWORD '$DB_PASSWORD';"
+              
+              # Create database if it doesn't exist
+              sudo -u postgres psql -c "SELECT 1 FROM pg_database WHERE datname='$ENV_DB_NAME'" | grep -q 1 || \
+                sudo -u postgres psql -c "CREATE DATABASE $ENV_DB_NAME OWNER $DB_USERNAME;"
+              
+              # Grant permissions
+              sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $ENV_DB_NAME TO $DB_USERNAME;"
+            done
+            
+            # Generate the database connection string (local since this is the DB host)
+            DATABASE_URL="postgresql://$DB_USERNAME:$DB_PASSWORD@localhost:5432/$DB_NAME"
+          else
+            echo "This instance uses the shared database on $SHARED_DB_HOST..."
+            # Generate the connection string to connect to the remote database
+            DATABASE_URL="postgresql://$DB_USERNAME:$DB_PASSWORD@$SHARED_DB_HOST:5432/$DB_NAME"
+          fi
+          
           # Load and run backend container
           docker load < backend.tar
           
@@ -204,12 +275,29 @@ jobs:
             -e PORT=4000 \
             -e NODE_ENV=production \
             -e ENVIRONMENT=$ENVIRONMENT \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e JWT_SECRET="$JWT_SECRET" \
+            -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+            -e CLIENT_URL="http://localhost" \
             swashflag-backend:$ENVIRONMENT
           EOL
           
           # Substitute actual environment value and API URL
           sed -i "s|\${ENVIRONMENT}|$ENVIRONMENT|g" deploy.sh
           sed -i "s|\${API_URL}|$API_URL|g" deploy.sh
+          sed -i "s|\${DB_USERNAME}|${{ secrets.DB_USERNAME }}|g" deploy.sh
+          sed -i "s|\${DB_PASSWORD}|${{ secrets.DB_PASSWORD }}|g" deploy.sh
+          sed -i "s|\${JWT_SECRET}|${{ secrets.JWT_SECRET }}|g" deploy.sh
+          sed -i "s|\${ENCRYPTION_KEY}|${{ secrets.ENCRYPTION_KEY }}|g" deploy.sh
+          
+          # Get the IS_DB_HOST and SHARED_DB_HOST values from Terraform output
+          cd terraform
+          IS_DB_HOST=$(terraform output -raw is_db_host 2>/dev/null || echo "false")
+          SHARED_DB_HOST=$(terraform output -raw shared_db_host 2>/dev/null || echo "localhost")
+          cd ..
+          
+          sed -i "s|\${IS_DB_HOST}|$IS_DB_HOST|g" deploy.sh
+          sed -i "s|\${SHARED_DB_HOST}|$SHARED_DB_HOST|g" deploy.sh
           
           # Copy and execute the deployment script on the EC2 instance
           scp -o StrictHostKeyChecking=no deploy.sh ubuntu@${{ steps.terraform.outputs.app_ip }}:/tmp/
