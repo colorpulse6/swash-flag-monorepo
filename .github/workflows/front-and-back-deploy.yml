@@ -90,6 +90,82 @@ jobs:
             echo "The AWS Console is often easier for VPC cleanup: https://console.aws.amazon.com/vpc/"
           fi
 
+      - name: Auto-cleanup unused VPCs
+        if: success()
+        run: |
+          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
+          echo "Looking for unused or duplicate VPCs for environment: $ENVIRONMENT"
+          
+          # Find VPCs with the current environment tag
+          ENV_VPCS=$(aws ec2 describe-vpcs --filters "Name=tag:Environment,Values=$ENVIRONMENT" --query "Vpcs[*].{VpcId:VpcId,Name:Tags[?Key=='Name'].Value|[0]}" --output json)
+          ENV_VPC_COUNT=$(echo "$ENV_VPCS" | jq 'length')
+          
+          if [ "$ENV_VPC_COUNT" -gt "1" ]; then
+            echo "⚠️ Found $ENV_VPC_COUNT VPCs for environment $ENVIRONMENT. This may cause conflicts."
+            echo "Will attempt to clean up duplicate VPCs to prevent errors..."
+            
+            # Get all VPC IDs for this environment except the most recently created one
+            DUPLICATE_VPCS=$(echo "$ENV_VPCS" | jq -r '.[1:][].VpcId')
+            
+            if [ -n "$DUPLICATE_VPCS" ]; then
+              echo "Identified the following duplicate VPCs to remove: $DUPLICATE_VPCS"
+              
+              for VPC_ID in $DUPLICATE_VPCS; do
+                echo "Attempting to clean up VPC: $VPC_ID"
+                
+                # First delete all subnets
+                SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[*].SubnetId" --output text)
+                for SUBNET in $SUBNETS; do
+                  echo "Deleting subnet $SUBNET in VPC $VPC_ID"
+                  aws ec2 delete-subnet --subnet-id $SUBNET || true
+                done
+                
+                # Delete internet gateway if exists
+                IGW=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --query "InternetGateways[*].InternetGatewayId" --output text)
+                if [ -n "$IGW" ]; then
+                  echo "Detaching and deleting internet gateway $IGW from VPC $VPC_ID"
+                  aws ec2 detach-internet-gateway --internet-gateway-id $IGW --vpc-id $VPC_ID || true
+                  aws ec2 delete-internet-gateway --internet-gateway-id $IGW || true
+                fi
+                
+                # Delete security groups (except default)
+                SEC_GROUPS=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --query "SecurityGroups[?GroupName!='default'].GroupId" --output text)
+                for SG in $SEC_GROUPS; do
+                  echo "Deleting security group $SG in VPC $VPC_ID"
+                  aws ec2 delete-security-group --group-id $SG || true
+                done
+                
+                # Delete any route tables (except main)
+                ROUTE_TABLES=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --query "RouteTables[?Associations[0].Main!=\`true\`].RouteTableId" --output text)
+                for RT in $ROUTE_TABLES; do
+                  # First delete route table associations
+                  ASSOCS=$(aws ec2 describe-route-tables --route-table-id $RT --query "RouteTables[0].Associations[?Main!=\`true\`].RouteTableAssociationId" --output text)
+                  for ASSOC in $ASSOCS; do
+                    echo "Deleting route table association $ASSOC"
+                    aws ec2 disassociate-route-table --association-id $ASSOC || true
+                  done
+                  
+                  echo "Deleting route table $RT in VPC $VPC_ID"
+                  aws ec2 delete-route-table --route-table-id $RT || true
+                done
+                
+                # Finally delete the VPC
+                echo "Deleting VPC $VPC_ID"
+                aws ec2 delete-vpc --vpc-id $VPC_ID || true
+              done
+            fi
+          else
+            echo "No duplicate VPCs found for environment $ENVIRONMENT."
+          fi
+          
+          # Also check for orphaned VPCs from deleted environments
+          ORPHANED_VPCS=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.PROJECT_NAME }}*" --query "Vpcs[?!contains([Tags[?Key=='Name'].Value|[0]], '$ENVIRONMENT')].VpcId" --output text)
+          
+          if [ -n "$ORPHANED_VPCS" ]; then
+            echo "Found potential orphaned VPCs from other environments: $ORPHANED_VPCS"
+            echo "These VPCs may be manually cleaned up later if needed."
+          fi
+
       - name: Terraform Init
         run: |
           cd terraform
@@ -100,14 +176,37 @@ jobs:
           cd terraform
           ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
           
+          echo "🔍 Checking Terraform workspaces..."
+          terraform workspace list
+          
           # Check if workspace exists
           if terraform workspace list | grep -q "$ENVIRONMENT"; then
+            echo "✅ Workspace '$ENVIRONMENT' found. Selecting it."
             terraform workspace select $ENVIRONMENT
           else
-            terraform workspace new $ENVIRONMENT
+            echo "🆕 Creating new workspace '$ENVIRONMENT'..."
+            terraform workspace new $ENVIRONMENT || {
+              echo "⚠️ Failed to create workspace. This could be due to a race condition."
+              echo "Trying to select it again in case it was created in another run..."
+              terraform workspace select $ENVIRONMENT || {
+                echo "❌ Error selecting workspace. Attempting to continue with default workspace..."
+                terraform workspace select default
+              }
+            }
           fi
           
-          echo "Using Terraform workspace: $(terraform workspace show)"
+          echo "🚀 Using Terraform workspace: $(terraform workspace show)"
+          
+          # Verify the workspace was selected correctly
+          CURRENT_WORKSPACE=$(terraform workspace show)
+          if [ "$CURRENT_WORKSPACE" != "$ENVIRONMENT" ] && [ "$CURRENT_WORKSPACE" != "default" ]; then
+            echo "❌ Workspace mismatch! Expected '$ENVIRONMENT', got '$CURRENT_WORKSPACE'"
+            echo "Attempting to fix by explicitly creating the expected workspace..."
+            terraform workspace new $ENVIRONMENT || terraform workspace select $ENVIRONMENT
+          fi
+          
+          # Double-check again
+          echo "✅ Final workspace check: $(terraform workspace show)"
       
       - name: Check for existing S3 bucket
         id: check_bucket
@@ -135,7 +234,7 @@ jobs:
             echo "Bucket does not exist or you don't have access to it."
             echo "bucket_exists=false" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Check for existing VPC
         id: check_vpc
         run: |
@@ -276,7 +375,7 @@ jobs:
             # Outputs exist, get them normally
             APP_IP=$(terraform output -raw app_public_ip 2>/dev/null || echo "")
             S3_BUCKET=$(terraform output -raw s3_deployment_bucket 2>/dev/null || echo "")
-            
+
             if [ -n "$APP_IP" ] && [ -n "$S3_BUCKET" ]; then
               echo "✅ Successfully retrieved terraform outputs"
               echo "app_ip=$APP_IP" >> $GITHUB_OUTPUT
@@ -293,7 +392,6 @@ jobs:
             echo "deployment_success=false" >> $GITHUB_OUTPUT
             exit 0  # Exit without error to continue workflow
           fi
-      
       - name: Notify deployment issues
         if: steps.terraform.outputs.deployment_success != 'true'
         run: |

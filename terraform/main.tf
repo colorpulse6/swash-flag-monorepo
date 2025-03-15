@@ -52,18 +52,32 @@ resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = merge(local.tags, { Name = "${local.resource_prefix}-vpc" })
+  tags = merge(local.tags, { 
+    Name = "${local.resource_prefix}-vpc",
+    ManagedBy = "Terraform" 
+  })
 
   # Add lifecycle block to handle existing VPCs
   lifecycle {
     # Ignore changes to the CIDR block to avoid conflicts with existing VPCs
-    ignore_changes = [cidr_block]
+    ignore_changes = [cidr_block, tags["Name"]]
+    # Don't replace this resource - try to update in place
+    create_before_destroy = false
   }
 }
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
-  tags   = merge(local.tags, { Name = "${local.resource_prefix}-igw" })
+  tags   = merge(local.tags, { 
+    Name = "${local.resource_prefix}-igw",
+    ManagedBy = "Terraform"
+  })
+  
+  lifecycle {
+    # More resilient to changes in the VPC ID
+    create_before_destroy = false
+    ignore_changes = [tags["Name"]]
+  }
 }
 
 resource "aws_subnet" "public" {
