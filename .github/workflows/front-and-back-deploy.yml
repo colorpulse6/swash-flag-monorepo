@@ -16,7 +16,26 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        cache: 'npm'
+    
+    - name: Install PNPM
+      uses: pnpm/action-setup@v3
+      with:
+        version: 8
+        run_install: false
+
+    - name: Get PNPM store directory
+      id: pnpm-cache
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+    - uses: actions/cache@v4
+      name: Setup PNPM cache
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
         
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -35,13 +54,15 @@ jobs:
         echo "EC2_PUBLIC_IP=$EC2_PUBLIC_IP" >> $GITHUB_ENV
         echo "BACKEND_API_URL=http://$EC2_PUBLIC_DNS:3000" >> $GITHUB_ENV
 
+    - name: Install dependencies
+      run: pnpm install
+
     - name: Build Frontend
       run: |
         cd apps/frontend
-        npm install
         # Set NODE_OPTIONS to enable the experimental fetch option needed for Vite
         export NODE_OPTIONS="--experimental-fetch"
-        VITE_API_URL='${{ env.BACKEND_API_URL }}' npm run build
+        VITE_API_URL='${{ env.BACKEND_API_URL }}' pnpm run build
 
     - name: Deploy Frontend to S3
       run: |
@@ -62,7 +83,7 @@ jobs:
     - name: Build Backend
       run: |
         cd apps/backend
-        npm install
+        pnpm install --no-frozen-lockfile
     
     - name: Deploy Backend to EC2
       env:
@@ -71,7 +92,13 @@ jobs:
         echo "$PRIVATE_KEY" > private_key.pem
         chmod 600 private_key.pem
         cd apps/backend
-        zip -r ../../backend.zip .
+        # Create production build first
+        pnpm run build
+        # Zip up the necessary files for deployment
+        zip -r ../../backend.zip . -x "node_modules/*" -x ".git/*"
+        # Install PM2 on the remote server if not already installed
+        ssh -o StrictHostKeyChecking=no -i ../../private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} 'npm list -g pm2 || npm install -g pm2'
+        # Upload and deploy
         scp -o StrictHostKeyChecking=no -i ../../private_key.pem ../../backend.zip ec2-user@${{ env.EC2_PUBLIC_IP }}:/home/ec2-user/
         ssh -o StrictHostKeyChecking=no -i ../../private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} '
           cd /home/ec2-user && 
@@ -83,6 +110,6 @@ jobs:
           echo "ENCRYPTION_KEY=\"${{ secrets.ENCRYPTION_KEY }}\"" >> .env && 
           echo "JWT_SECRET=\"${{ secrets.JWT_SECRET }}\"" >> .env && 
           echo "CLIENT_URL=${{ secrets.CLOUDFRONT_URL }}" >> .env && 
-          npm install && 
+          npm install --production &&
           pm2 restart all || pm2 start npm --name "swashflag" -- start'
         rm -f ../../private_key.pem 
