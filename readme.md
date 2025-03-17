@@ -22,8 +22,38 @@ The simplified architecture consists of:
 
 5. **Multi-Environment Support**:
    - Uses Terraform workspaces for environment isolation
-   - Supports dev, staging, and production environments
+   - Development environment runs locally only (not deployed to AWS)
+   - Supports staging and production environments in AWS
    - Environment-specific configuration and deployment
+
+## Development Environment Setup
+
+The development environment runs locally to save costs and AWS resources:
+
+1. **Local Setup**:
+   ```bash
+   # Install dependencies
+   pnpm install
+   
+   # Start local development servers
+   pnpm dev
+   ```
+
+2. **Local Database**:
+   - Use a local PostgreSQL instance for development
+   - Configure connection details in your local `.env` file
+
+## Deployment Environments
+
+This project uses two AWS deployment environments:
+
+1. **Staging**: For pre-production testing and validation
+   - Hosts the shared PostgreSQL database for both environments
+   - Deployed from the `develop` branch
+
+2. **Production**: For live application
+   - Uses the database hosted on the staging environment
+   - Deployed from tagged releases (`v*` tags)
 
 ## GitHub Secrets Configuration
 
@@ -103,25 +133,29 @@ This infrastructure is specifically designed to minimize AWS costs while still s
 1. AWS account with appropriate permissions
 2. GitHub repository with necessary secrets (see GitHub Secrets Configuration section)
 3. AWS EC2 Key Pair for SSH access
+4. Local environment for development
 
 ## Multi-Environment Strategy
 
-The infrastructure supports three environments:
+The infrastructure supports two AWS environments plus local development:
 
-- **Development (dev)**: For active development and testing
-  - Deployed automatically from the `develop` branch
-  - Prefix: `swashflag-dev`
+- **Development**: Runs locally, not deployed to AWS
+  - Use local server and database
+  - Run with `pnpm dev` command
+  - Saves costs by avoiding AWS resources for development
 
 - **Staging (staging)**: For pre-production validation
-  - Deployed automatically from the `main` branch
+  - Deployed automatically from the `develop` branch
   - Prefix: `swashflag-staging`
+  - Hosts the PostgreSQL database used by both environments
 
 - **Production (prod)**: For live application
   - Deployed when a version tag is pushed (e.g., `v1.0.0`)
   - Prefix: `swashflag-prod`
+  - Connects to the database hosted in the staging environment
 
-Each environment is isolated using Terraform workspaces and has:
-- Its own set of AWS resources
+The AWS environments are isolated using Terraform workspaces and have:
+- Their own set of AWS resources
 - Environment-specific resource naming
 - Environment-specific configuration
 - Visual indicators in the UI to distinguish environments
@@ -248,18 +282,33 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 To optimize costs while maintaining proper environment isolation, this project uses a shared database strategy:
 
-1. **Single Database Host**: The `dev` environment hosts a PostgreSQL database server that is used by all environments.
+1. **Single Database Host**: The `staging` environment hosts a PostgreSQL database server that is used by both AWS environments.
    - Reduces costs by running only one database instance
-   - All database connections are secured within the VPC
+   - Development uses a local database for faster development
+   - All AWS database connections are secured within the VPC
 
 2. **Environment-Specific Databases**: While sharing the same database server, each environment has its own dedicated database:
-   - `swash_flag_dev` for development
+   - Local database for development (not on AWS)
    - `swash_flag_staging` for staging
    - `swash_flag_prod` for production
 
 3. **Proper Isolation**: Each environment is fully isolated from others:
-   - Separate EC2 instances for each environment
+   - Local development runs entirely on your machine
+   - Separate EC2 instances for staging and production
    - Individual S3 buckets for deployment artifacts
    - Environment-specific databases on the shared database server
 
-This approach allows you to maintain a complete testing workflow (dev → staging → prod) while minimizing AWS costs by consolidating database resources.
+This approach allows you to maintain a complete testing workflow (local → staging → prod) while minimizing AWS costs by:
+- Eliminating the AWS dev environment entirely
+- Consolidating database resources in the staging environment
+
+## Simplified AWS Deployment Workflow
+
+We have implemented a simplified AWS deployment workflow that uses manually created AWS resources instead of Terraform-managed infrastructure. This new approach:
+
+- Reduces complexity and deployment times
+- Leverages existing manually created AWS resources
+- Uses Terraform only for deployment orchestration, not infrastructure creation
+- Securely manages secrets through GitHub Actions secrets
+
+For detailed documentation on the new workflow, see [Simplified AWS Workflow Documentation](docs/simplified-aws-workflow.md).

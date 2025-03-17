@@ -2,9 +2,38 @@
 # Copy this file to terraform.tfvars and fill in your values
 # DO NOT commit terraform.tfvars to version control
 
-# Project settings
+# AWS Region
+aws_region = "us-west-2"
+
+# Project name
 project_name = "swashflag"
-aws_region   = "us-west-2"
+
+# Existing AWS resource IDs
+vpc_id = "vpc-example123456789"
+subnet_ids = ["subnet-example1", "subnet-example2", "subnet-example3"]
+db_security_group_id = "sg-example-db"
+backend_security_group_id = "sg-example-backend"
+ec2_instance_id = "i-example123456789"
+s3_bucket_name = "example-frontend-bucket"
+
+# CloudFront distribution ID (fill this in with your actual ID for cache invalidation)
+cloudfront_distribution_id = ""
+
+# Database connection details 
+db_endpoint = "example-db.region.rds.amazonaws.com"
+db_name = "swashflag"
+db_username = "postgres"
+db_password = ""  # Fill this in securely, preferably via environment variable
+
+# Security variables - DO NOT commit actual values to version control
+# Instead, use environment variables:
+# export TF_VAR_encryption_key="your-encryption-key"
+# export TF_VAR_jwt_secret="your-jwt-secret"
+# encryption_key = ""
+# jwt_secret = ""
+
+# SSH key path for EC2 access
+ssh_key_path = "~/.ssh/id_rsa"  # Update to your actual SSH key path
 
 # Network settings
 vpc_cidr            = "10.0.0.0/16"

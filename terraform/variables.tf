@@ -1,11 +1,11 @@
 variable "project_name" {
-  description = "The name of the project"
+  description = "Project name"
   type        = string
   default     = "swashflag"
 }
 
 variable "aws_region" {
-  description = "The AWS region to deploy resources"
+  description = "AWS region"
   type        = string
   default     = "us-west-2"
 }
@@ -42,15 +42,90 @@ variable "tags" {
 
 # Variables mentioned in warnings - made secure
 variable "db_username" {
-  description = "Database username - should be provided via environment variables or secrets, not defaults"
+  description = "Database username"
   type        = string
   sensitive   = true
-  # No default value - force explicit setting
+  default     = "postgres"
 }
 
 variable "db_password" {
-  description = "Database password - should be provided via environment variables or secrets, not defaults"
+  description = "Database password"
   type        = string
   sensitive   = true
-  # No default value - force explicit setting
+  default     = ""  # Should be provided via environment variable or terraform.tfvars
+}
+
+# Security variables
+variable "encryption_key" {
+  description = "Encryption key for the backend application"
+  type        = string
+  sensitive   = true
+  default     = ""  # Should be provided via environment variable TF_VAR_encryption_key
+}
+
+variable "jwt_secret" {
+  description = "JWT secret for the backend application"
+  type        = string
+  sensitive   = true
+  default     = ""  # Should be provided via environment variable TF_VAR_jwt_secret
+}
+
+# Existing resource IDs
+variable "vpc_id" {
+  description = "Existing VPC ID"
+  type        = string
+  default     = null  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "subnet_ids" {
+  description = "Existing subnet IDs"
+  type        = list(string)
+  default     = []  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "db_security_group_id" {
+  description = "Database security group ID"
+  type        = string
+  default     = null  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "backend_security_group_id" {
+  description = "Backend security group ID"
+  type        = string
+  default     = null  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "ec2_instance_id" {
+  description = "Backend EC2 instance ID"
+  type        = string
+  default     = null  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "s3_bucket_name" {
+  description = "Frontend S3 bucket name"
+  type        = string
+  default     = null  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID for cache invalidation"
+  type        = string
+  default     = ""  # Optional, can be provided in terraform.tfvars or via environment variable
+}
+
+variable "db_endpoint" {
+  description = "RDS endpoint"
+  type        = string
+  default     = null  # Must be provided in terraform.tfvars or via environment variable
+}
+
+variable "db_name" {
+  description = "Database name"
+  type        = string
+  default     = "swashflag"
+}
+
+variable "ssh_key_path" {
+  description = "Path to SSH private key for EC2 access"
+  default     = "~/.ssh/id_rsa"  # Update to actual path
 }

@@ -1,590 +1,85 @@
-name: Deploy Application
+name: Deploy Swashflag
 
 on:
   push:
-    branches: [main, develop]
-    tags: ['v*']
+    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Environment to deploy to'
-        required: true
-        default: 'staging'
-        type: choice
-        options:
-          - staging
-          - prod
-
-env:
-  AWS_REGION: us-west-2
-  PROJECT_NAME: swashflag
-  TF_VERSION: 1.5.0
 
 jobs:
-  # Determine environment based on trigger
-  set-environment:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    outputs:
-      environment: ${{ steps.set-env.outputs.environment }}
+    
     steps:
-      - id: set-env
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          elif [[ $GITHUB_REF == refs/tags/v* ]]; then
-            echo "environment=prod" >> $GITHUB_OUTPUT
-          elif [[ $GITHUB_REF == refs/heads/main ]]; then
-            echo "environment=staging" >> $GITHUB_OUTPUT
-          else
-            echo "environment=staging" >> $GITHUB_OUTPUT
-          fi
-  
-  # Deployment job
-  deploy:
-    needs: set-environment
-    runs-on: ubuntu-latest
-    environment: ${{ needs.set-environment.outputs.environment }}
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      
-      - name: Install dependencies
-        run: |
-          npm install -g pnpm
-          pnpm install
-      
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-      
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-      
-      - name: List existing VPCs for cleanup
-        run: |
-          echo "Checking AWS VPC limits and existing resources..."
+    - uses: actions/checkout@v3
 
-          # List all VPCs with details
-          echo "📊 Current VPCs in your account:"
-          aws ec2 describe-vpcs --query "Vpcs[*].{VpcId:VpcId,CidrBlock:CidrBlock,IsDefault:IsDefault,Name:Tags[?Key=='Name'].Value|[0],Environment:Tags[?Key=='Environment'].Value|[0]}" --output table
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16'
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
 
-          # Count VPCs
-          VPC_COUNT=$(aws ec2 describe-vpcs --query "length(Vpcs)" --output text)
-          echo "You have $VPC_COUNT VPCs in this region (limit is typically 5 per region)"
+    # Get EC2 public DNS from instance ID
+    - name: Get EC2 Public DNS
+      id: ec2-dns
+      run: |
+        EC2_PUBLIC_DNS=$(aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --query "Reservations[0].Instances[0].PublicDnsName" --output text)
+        EC2_PUBLIC_IP=$(aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+        echo "EC2_PUBLIC_DNS=$EC2_PUBLIC_DNS" >> $GITHUB_ENV
+        echo "EC2_PUBLIC_IP=$EC2_PUBLIC_IP" >> $GITHUB_ENV
+        echo "BACKEND_API_URL=http://$EC2_PUBLIC_DNS:3000" >> $GITHUB_ENV
 
-          if [ "$VPC_COUNT" -ge "5" ]; then
-            echo "⚠️ You've reached the VPC limit for this region. Consider deleting unused VPCs."
-            echo "To delete an unused VPC, use the following AWS CLI command:"
-            echo "aws ec2 delete-vpc --vpc-id <vpc-id>"
-            echo ""
-            echo "NOTE: You must first delete all resources within the VPC (EC2 instances, subnets, etc.)"
-            echo "The AWS Console is often easier for VPC cleanup: https://console.aws.amazon.com/vpc/"
-          fi
+    - name: Build Frontend
+      run: |
+        cd apps/frontend
+        npm install
+        VITE_API_URL='${{ env.BACKEND_API_URL }}' npm run build
 
-      - name: Auto-cleanup unused VPCs
-        if: success()
-        run: |
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          echo "Looking for unused or duplicate VPCs for environment: $ENVIRONMENT"
-          
-          # Find VPCs with the current environment tag
-          ENV_VPCS=$(aws ec2 describe-vpcs --filters "Name=tag:Environment,Values=$ENVIRONMENT" --query "Vpcs[*].{VpcId:VpcId,Name:Tags[?Key=='Name'].Value|[0]}" --output json)
-          ENV_VPC_COUNT=$(echo "$ENV_VPCS" | jq 'length')
-          
-          if [ "$ENV_VPC_COUNT" -gt "1" ]; then
-            echo "⚠️ Found $ENV_VPC_COUNT VPCs for environment $ENVIRONMENT. This may cause conflicts."
-            echo "Will attempt to clean up duplicate VPCs to prevent errors..."
-            
-            # Get all VPC IDs for this environment except the most recently created one
-            DUPLICATE_VPCS=$(echo "$ENV_VPCS" | jq -r '.[1:][].VpcId')
-            
-            if [ -n "$DUPLICATE_VPCS" ]; then
-              echo "Identified the following duplicate VPCs to remove: $DUPLICATE_VPCS"
-              
-              for VPC_ID in $DUPLICATE_VPCS; do
-                echo "Attempting to clean up VPC: $VPC_ID"
-                
-                # First delete all subnets
-                SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[*].SubnetId" --output text)
-                for SUBNET in $SUBNETS; do
-                  echo "Deleting subnet $SUBNET in VPC $VPC_ID"
-                  aws ec2 delete-subnet --subnet-id $SUBNET || true
-                done
-                
-                # Delete internet gateway if exists
-                IGW=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --query "InternetGateways[*].InternetGatewayId" --output text)
-                if [ -n "$IGW" ]; then
-                  echo "Detaching and deleting internet gateway $IGW from VPC $VPC_ID"
-                  aws ec2 detach-internet-gateway --internet-gateway-id $IGW --vpc-id $VPC_ID || true
-                  aws ec2 delete-internet-gateway --internet-gateway-id $IGW || true
-                fi
-                
-                # Delete security groups (except default)
-                SEC_GROUPS=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --query "SecurityGroups[?GroupName!='default'].GroupId" --output text)
-                for SG in $SEC_GROUPS; do
-                  echo "Deleting security group $SG in VPC $VPC_ID"
-                  aws ec2 delete-security-group --group-id $SG || true
-                done
-                
-                # Delete any route tables (except main)
-                ROUTE_TABLES=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --query "RouteTables[?Associations[0].Main!=\`true\`].RouteTableId" --output text)
-                for RT in $ROUTE_TABLES; do
-                  # First delete route table associations
-                  ASSOCS=$(aws ec2 describe-route-tables --route-table-id $RT --query "RouteTables[0].Associations[?Main!=\`true\`].RouteTableAssociationId" --output text)
-                  for ASSOC in $ASSOCS; do
-                    echo "Deleting route table association $ASSOC"
-                    aws ec2 disassociate-route-table --association-id $ASSOC || true
-                  done
-                  
-                  echo "Deleting route table $RT in VPC $VPC_ID"
-                  aws ec2 delete-route-table --route-table-id $RT || true
-                done
-                
-                # Finally delete the VPC
-                echo "Deleting VPC $VPC_ID"
-                aws ec2 delete-vpc --vpc-id $VPC_ID || true
-              done
-            fi
-          else
-            echo "No duplicate VPCs found for environment $ENVIRONMENT."
-          fi
-          
-          # Also check for orphaned VPCs from deleted environments
-          ORPHANED_VPCS=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.PROJECT_NAME }}*" --query "Vpcs[?!contains([Tags[?Key=='Name'].Value|[0]], '$ENVIRONMENT')].VpcId" --output text)
-          
-          if [ -n "$ORPHANED_VPCS" ]; then
-            echo "Found potential orphaned VPCs from other environments: $ORPHANED_VPCS"
-            echo "These VPCs may be manually cleaned up later if needed."
-          fi
+    - name: Deploy Frontend to S3
+      run: |
+        aws s3 sync apps/frontend/dist/ s3://${{ secrets.S3_BUCKET_NAME }} --delete
+    
+    - name: Invalidate CloudFront
+      run: |
+        # Attempt to invalidate CloudFront distribution if the ID is provided
+        # This will silently fail if the ID is not set
+        if [ -n "$CLOUDFRONT_DISTRIBUTION_ID" ]; then
+          aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"
+        else
+          echo "CloudFront distribution ID not provided, skipping invalidation"
+        fi
+      env:
+        CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
 
-      - name: Terraform Init
-        run: |
-          cd terraform
-          terraform init
-      
-      - name: Select Terraform Workspace
-        run: |
-          cd terraform
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          
-          echo "🔍 Checking Terraform workspaces..."
-          terraform workspace list
-          
-          # Check if workspace exists
-          if terraform workspace list | grep -q "$ENVIRONMENT"; then
-            echo "✅ Workspace '$ENVIRONMENT' found. Selecting it."
-            terraform workspace select $ENVIRONMENT
-          else
-            echo "🆕 Creating new workspace '$ENVIRONMENT'..."
-            terraform workspace new $ENVIRONMENT || {
-              echo "⚠️ Failed to create workspace. This could be due to a race condition."
-              echo "Trying to select it again in case it was created in another run..."
-              terraform workspace select $ENVIRONMENT || {
-                echo "❌ Error selecting workspace. Attempting to continue with default workspace..."
-                terraform workspace select default
-              }
-            }
-          fi
-          
-          echo "🚀 Using Terraform workspace: $(terraform workspace show)"
-          
-          # Verify the workspace was selected correctly
-          CURRENT_WORKSPACE=$(terraform workspace show)
-          if [ "$CURRENT_WORKSPACE" != "$ENVIRONMENT" ] && [ "$CURRENT_WORKSPACE" != "default" ]; then
-            echo "❌ Workspace mismatch! Expected '$ENVIRONMENT', got '$CURRENT_WORKSPACE'"
-            echo "Attempting to fix by explicitly creating the expected workspace..."
-            terraform workspace new $ENVIRONMENT || terraform workspace select $ENVIRONMENT
-          fi
-          
-          # Double-check again
-          echo "✅ Final workspace check: $(terraform workspace show)"
-      
-      - name: Check for existing S3 bucket
-        id: check_bucket
-        run: |
-          cd terraform
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          BUCKET_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-deployment"
-          echo "Checking if bucket $BUCKET_NAME already exists..."
-          if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
-            echo "Bucket $BUCKET_NAME already exists and is owned by you."
-            echo "Importing bucket into Terraform state..."
-            # Include all required variables when importing
-            terraform import \
-              -var="project_name=${{ env.PROJECT_NAME }}" \
-              -var="aws_region=${{ env.AWS_REGION }}" \
-              -var="vpc_cidr=10.0.0.0/16" \
-              -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-              -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-              -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-              -var="db_username=${{ secrets.DB_USERNAME }}" \
-              -var="db_password=${{ secrets.DB_PASSWORD }}" \
-              aws_s3_bucket.deployment "$BUCKET_NAME" || echo "Bucket may already be in Terraform state"
-            echo "bucket_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "Bucket does not exist or you don't have access to it."
-            echo "bucket_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Check for existing VPC
-        id: check_vpc
-        run: |
-          cd terraform
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          VPC_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-vpc"
-          
-          echo "Checking if VPC $VPC_NAME already exists..."
-          
-          # Find VPC by name tag
-          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=$VPC_NAME" --query "Vpcs[0].VpcId" --output text)
-          
-          if [ "$VPC_ID" != "None" ] && [ -n "$VPC_ID" ]; then
-            echo "Found existing VPC with ID: $VPC_ID"
-            echo "Importing VPC into Terraform state..."
-            
-            # Import the VPC into Terraform state
-            terraform import \
-              -var="project_name=${{ env.PROJECT_NAME }}" \
-              -var="aws_region=${{ env.AWS_REGION }}" \
-              -var="vpc_cidr=10.0.0.0/16" \
-              -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-              -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-              -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-              -var="db_username=${{ secrets.DB_USERNAME }}" \
-              -var="db_password=${{ secrets.DB_PASSWORD }}" \
-              aws_vpc.main "$VPC_ID" || echo "VPC may already be in Terraform state"
-            
-            # Also check for Internet Gateway associated with this VPC
-            IGW_ID=$(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --query "InternetGateways[0].InternetGatewayId" --output text)
-            
-            if [ "$IGW_ID" != "None" ] && [ -n "$IGW_ID" ]; then
-              echo "Found existing Internet Gateway with ID: $IGW_ID"
-              echo "Importing Internet Gateway into Terraform state..."
-              
-              terraform import \
-                -var="project_name=${{ env.PROJECT_NAME }}" \
-                -var="aws_region=${{ env.AWS_REGION }}" \
-                -var="vpc_cidr=10.0.0.0/16" \
-                -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-                -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-                -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-                -var="db_username=${{ secrets.DB_USERNAME }}" \
-                -var="db_password=${{ secrets.DB_PASSWORD }}" \
-                aws_internet_gateway.main "$IGW_ID" || echo "Internet Gateway may already be in Terraform state"
-            fi
-
-            echo "vpc_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "VPC does not exist or you don't have access to it."
-            echo "vpc_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Terraform Plan
-        run: |
-          cd terraform
-          terraform plan \
-            -var="project_name=${{ env.PROJECT_NAME }}" \
-            -var="aws_region=${{ env.AWS_REGION }}" \
-            -var="vpc_cidr=10.0.0.0/16" \
-            -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-            -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-            -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-            -var="db_username=${{ secrets.DB_USERNAME }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}" \
-            -out=tfplan
-      
-      - name: Terraform Apply
-        id: terraform_apply
-        continue-on-error: true  # Keep this to make workflow more resilient
-        run: |
-          cd terraform
-          # Apply with lower parallelism to avoid race conditions
-          terraform apply -parallelism=1 -auto-approve tfplan
-      
-      - name: Handle Terraform Apply Errors
-        if: steps.terraform_apply.outcome == 'failure'
-        run: |
-          cd terraform
-          
-          echo "Terraform apply failed. Attempting direct apply without using saved plan..."
-          
-          # Check for existing VPC before trying again
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          VPC_NAME="${{ env.PROJECT_NAME }}-${ENVIRONMENT}-vpc"
-          
-          echo "Looking for existing VPCs to reuse or clean up..."
-          
-          # Try to find any existing VPC that could be reused
-          ALL_VPCS=$(aws ec2 describe-vpcs --query "Vpcs[?Tags[?Key=='Environment' && Value=='$ENVIRONMENT']]" --output json)
-          VPC_COUNT=$(echo "$ALL_VPCS" | jq 'length')
-          
-          if [ "$VPC_COUNT" -gt "0" ]; then
-            echo "Found $VPC_COUNT existing VPCs for environment $ENVIRONMENT"
-            
-            # Get the ID of the first matching VPC
-            EXISTING_VPC_ID=$(echo "$ALL_VPCS" | jq -r '.[0].VpcId')
-            echo "Will attempt to reuse VPC: $EXISTING_VPC_ID"
-            
-            # Import the existing VPC
-            terraform import \
-              -var="project_name=${{ env.PROJECT_NAME }}" \
-              -var="aws_region=${{ env.AWS_REGION }}" \
-              -var="vpc_cidr=10.0.0.0/16" \
-              -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-              -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-              -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-              -var="db_username=${{ secrets.DB_USERNAME }}" \
-              -var="db_password=${{ secrets.DB_PASSWORD }}" \
-              aws_vpc.main "$EXISTING_VPC_ID" || true
-          else
-            echo "No existing VPCs found for environment $ENVIRONMENT"
-            echo "You have reached the AWS VPC limit. You have these options:"
-            echo "1. Delete unused VPCs in the AWS Console"
-            echo "2. Request a VPC limit increase from AWS Support"
-            echo "3. Use a different AWS region for this deployment"
-          fi
-          # Try applying again with additional error handling
-          echo "Running targeted apply for non-network resources..."
-          terraform apply \
-            -parallelism=1 \
-            -auto-approve \
-            -var="project_name=${{ env.PROJECT_NAME }}" \
-            -var="aws_region=${{ env.AWS_REGION }}" \
-            -var="vpc_cidr=10.0.0.0/16" \
-            -var='availability_zones=["${{ env.AWS_REGION }}a", "${{ env.AWS_REGION }}b"]' \
-            -var="ami_id=${{ secrets.AMI_ID || 'ami-0efcece6bed30fd98' }}" \
-            -var="key_name=${{ secrets.EC2_KEY_NAME || '' }}" \
-            -var="db_username=${{ secrets.DB_USERNAME }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}" || echo "Unable to apply Terraform changes. Check AWS VPC limits."
-      - name: Get deployment outputs
-        id: terraform
-        continue-on-error: true
-        run: |
-          cd terraform
-          # Check if our deployment succeeded by testing if outputs exist
-          if terraform output -json > /dev/null 2>&1; then
-            # Outputs exist, get them normally
-            APP_IP=$(terraform output -raw app_public_ip 2>/dev/null || echo "")
-            S3_BUCKET=$(terraform output -raw s3_deployment_bucket 2>/dev/null || echo "")
-
-            if [ -n "$APP_IP" ] && [ -n "$S3_BUCKET" ]; then
-              echo "✅ Successfully retrieved terraform outputs"
-              echo "app_ip=$APP_IP" >> $GITHUB_OUTPUT
-              echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
-              echo "api_url=http://$APP_IP/api" >> $GITHUB_OUTPUT
-              echo "deployment_success=true" >> $GITHUB_OUTPUT
-            else
-              echo "⚠️ Some terraform outputs are missing"
-              echo "deployment_success=false" >> $GITHUB_OUTPUT
-              exit 0  # Exit without error to continue workflow
-            fi
-          else
-            echo "⚠️ No terraform outputs available - deployment may have failed"
-            echo "deployment_success=false" >> $GITHUB_OUTPUT
-            exit 0  # Exit without error to continue workflow
-          fi
-      - name: Notify deployment issues
-        if: steps.terraform.outputs.deployment_success != 'true'
-        run: |
-          echo "::warning::Infrastructure deployment failed or was incomplete. The workflow will exit."
-          echo "To fix this issue:"
-          echo "1. Delete unused VPCs in the AWS Console"
-          echo "2. Request a VPC limit increase from AWS Support"
-          echo "3. Try using a different AWS region"
-          exit 1  # Fail workflow here
-      
-      - name: Build applications with dynamic config
-        if: steps.terraform.outputs.deployment_success == 'true'
-        run: |
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          API_URL=${{ steps.terraform.outputs.api_url }}
-          echo "Building for environment: $ENVIRONMENT with API URL: $API_URL"
-          
-          # Create or update frontend .env file with dynamic API URL
-          echo "VITE_API_URL=$API_URL" > apps/frontend/.env.$ENVIRONMENT.local
-          echo "VITE_APP_ENV=$ENVIRONMENT" >> apps/frontend/.env.$ENVIRONMENT.local
-          echo "VITE_APP_STAGE=$ENVIRONMENT" >> apps/frontend/.env.$ENVIRONMENT.local
-          
-          # Display the environment file for debugging
-          echo "Using frontend environment config:"
-          cat apps/frontend/.env.$ENVIRONMENT.local
-          
-          # Pass environment to build process
-          pnpm run build
-      
-      - name: Build and package backend
-        if: steps.terraform.outputs.deployment_success == 'true'
-        run: |
-          cd apps/backend
-          # Include environment in container tag
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          docker build -t swashflag-backend:$ENVIRONMENT .
-          docker save swashflag-backend:$ENVIRONMENT > backend.tar
-      
-      - name: Upload backend to S3
-        if: steps.terraform.outputs.deployment_success == 'true'
-        run: |
-          aws s3 cp apps/backend/backend.tar s3://${{ steps.terraform.outputs.s3_bucket }}/backend.tar
-      
-      - name: Upload frontend to S3
-        if: steps.terraform.outputs.deployment_success == 'true'
-        run: |
-          aws s3 cp apps/frontend/dist/ s3://${{ steps.terraform.outputs.s3_bucket }}/frontend/ --recursive
-      
-      - name: Deploy to EC2
-        if: steps.terraform.outputs.deployment_success == 'true'
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          
-          ENVIRONMENT=${{ needs.set-environment.outputs.environment }}
-          API_URL=${{ steps.terraform.outputs.api_url }}
-          
-          # Deploy script
-          cat > deploy.sh << 'EOL'
-          #!/bin/bash
-          
-          # Environment setting
-          ENVIRONMENT="${ENVIRONMENT}"
-          API_URL="${API_URL}"
-          DB_USERNAME="${DB_USERNAME}"
-          DB_PASSWORD="${DB_PASSWORD}"
-          JWT_SECRET="${JWT_SECRET}"
-          ENCRYPTION_KEY="${ENCRYPTION_KEY}"
-          DB_NAME="swash_flag_${ENVIRONMENT}"
-          IS_DB_HOST="${IS_DB_HOST}"
-          SHARED_DB_HOST="${SHARED_DB_HOST}"
-          
-          echo "Deploying to environment: $ENVIRONMENT with API URL: $API_URL"
-          
-          # Download artifacts from S3
-          aws s3 cp s3://${{ steps.terraform.outputs.s3_bucket }}/backend.tar .
-          aws s3 cp s3://${{ steps.terraform.outputs.s3_bucket }}/frontend/ /var/www/html/ --recursive
-          
-          # Create environment indicator file
-          echo "ENVIRONMENT=$ENVIRONMENT" > /var/www/html/env-config.js
-          
-          # Create runtime config for frontend to access API
-          cat > /var/www/html/runtime-config.js << CFGEOF
-          // This file is auto-generated during deployment - DO NOT EDIT MANUALLY
-          window.RUNTIME_CONFIG = {
-            API_URL: "$API_URL",
-            ENVIRONMENT: "$ENVIRONMENT",
-            BUILD_TIME: "$(date)"
-          };
-          CFGEOF
-          
-          # Ensure runtime config is loaded by adding to index.html if not already there
-          if ! grep -q "runtime-config.js" /var/www/html/index.html; then
-            sed -i 's/<head>/<head>\n    <script src="\/runtime-config.js"><\/script>/' /var/www/html/index.html
-          fi
-          
-          # Database setup - only on the database host instance (staging environment)
-          if [ "$IS_DB_HOST" = "true" ]; then
-            echo "This instance is the database host. Setting up PostgreSQL..."
-            
-            # Install PostgreSQL if not already installed
-            if ! command -v psql &> /dev/null; then
-              echo "Installing PostgreSQL..."
-              apt-get update
-              apt-get install -y postgresql postgresql-contrib
-            fi
-            
-            # Start PostgreSQL service
-            systemctl start postgresql
-            systemctl enable postgresql
-            
-            # Configure PostgreSQL to allow remote connections (needed for other environments to connect)
-            echo "Configuring PostgreSQL for remote connections..."
-            
-            # Backup the postgresql.conf file
-            cp /etc/postgresql/*/main/postgresql.conf /etc/postgresql/*/main/postgresql.conf.bak
-            
-            # Update the configuration to listen on all interfaces
-            sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" /etc/postgresql/*/main/postgresql.conf
-            
-            # Backup the pg_hba.conf file
-            cp /etc/postgresql/*/main/pg_hba.conf /etc/postgresql/*/main/pg_hba.conf.bak
-            
-            # Add a line to allow connections from the VPC CIDR
-            echo "host    all             all             10.0.0.0/16              md5" >> /etc/postgresql/*/main/pg_hba.conf
-            
-            # Restart PostgreSQL to apply changes
-            systemctl restart postgresql
-            
-            # Create database users and databases for all environments
-            echo "Setting up database users and databases for environments..."
-            
-            # Loop through environments and create users/databases
-            for ENV in "staging" "prod"; do
-              ENV_DB_NAME="swash_flag_${ENV}"
-              
-              # Create user if it doesn't exist (use the same DB_USERNAME for simplicity)
-              sudo -u postgres psql -c "SELECT 1 FROM pg_roles WHERE rolname='$DB_USERNAME'" | grep -q 1 || \
-                sudo -u postgres psql -c "CREATE USER $DB_USERNAME WITH PASSWORD '$DB_PASSWORD';"
-              
-              # Create database if it doesn't exist
-              sudo -u postgres psql -c "SELECT 1 FROM pg_database WHERE datname='$ENV_DB_NAME'" | grep -q 1 || \
-                sudo -u postgres psql -c "CREATE DATABASE $ENV_DB_NAME OWNER $DB_USERNAME;"
-              
-              # Grant permissions
-              sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $ENV_DB_NAME TO $DB_USERNAME;"
-            done
-            
-            # Generate the database connection string (local since this is the DB host)
-            DATABASE_URL="postgresql://$DB_USERNAME:$DB_PASSWORD@localhost:5432/$DB_NAME"
-          else
-            echo "This instance uses the shared database on $SHARED_DB_HOST..."
-            # Generate the connection string to connect to the remote database
-            DATABASE_URL="postgresql://$DB_USERNAME:$DB_PASSWORD@$SHARED_DB_HOST:5432/$DB_NAME"
-          fi
-          
-          # Load and run backend container
-          docker load < backend.tar
-          
-          # Stop existing container if it exists
-          docker stop swashflag-backend || true
-          docker rm swashflag-backend || true
-          
-          # Run the new container with environment-specific configuration
-          docker run -d --name swashflag-backend -p 4000:4000 \
-            -e PORT=4000 \
-            -e NODE_ENV=production \
-            -e ENVIRONMENT=$ENVIRONMENT \
-            -e DATABASE_URL="$DATABASE_URL" \
-            -e JWT_SECRET="$JWT_SECRET" \
-            -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
-            -e CLIENT_URL="http://localhost" \
-            swashflag-backend:$ENVIRONMENT
-          EOL
-          
-          # Substitute actual environment value and API URL
-          sed -i "s|\${ENVIRONMENT}|$ENVIRONMENT|g" deploy.sh
-          sed -i "s|\${API_URL}|$API_URL|g" deploy.sh
-          sed -i "s|\${DB_USERNAME}|${{ secrets.DB_USERNAME }}|g" deploy.sh
-          sed -i "s|\${DB_PASSWORD}|${{ secrets.DB_PASSWORD }}|g" deploy.sh
-          sed -i "s|\${JWT_SECRET}|${{ secrets.JWT_SECRET }}|g" deploy.sh
-          sed -i "s|\${ENCRYPTION_KEY}|${{ secrets.ENCRYPTION_KEY }}|g" deploy.sh
-          
-          # Get the IS_DB_HOST and SHARED_DB_HOST values from Terraform output
-          cd terraform
-          IS_DB_HOST=$(terraform output -raw is_db_host 2>/dev/null || echo "false")
-          SHARED_DB_HOST=$(terraform output -raw shared_db_host 2>/dev/null || echo "localhost")
-          cd ..
-          
-          sed -i "s|\${IS_DB_HOST}|$IS_DB_HOST|g" deploy.sh
-          sed -i "s|\${SHARED_DB_HOST}|$SHARED_DB_HOST|g" deploy.sh
-          
-          # Copy and execute the deployment script on the EC2 instance
-          scp -o StrictHostKeyChecking=no deploy.sh ubuntu@${{ steps.terraform.outputs.app_ip }}:/tmp/
-          ssh -o StrictHostKeyChecking=no ubuntu@${{ steps.terraform.outputs.app_ip }} "chmod +x /tmp/deploy.sh && sudo /tmp/deploy.sh" 
+    - name: Build Backend
+      run: |
+        cd apps/backend
+        npm install
+    
+    - name: Deploy Backend to EC2
+      env:
+        PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+      run: |
+        echo "$PRIVATE_KEY" > private_key.pem
+        chmod 600 private_key.pem
+        cd apps/backend
+        zip -r ../../backend.zip .
+        scp -o StrictHostKeyChecking=no -i ../../private_key.pem ../../backend.zip ec2-user@${{ env.EC2_PUBLIC_IP }}:/home/ec2-user/
+        ssh -o StrictHostKeyChecking=no -i ../../private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} '
+          cd /home/ec2-user && 
+          unzip -o backend.zip -d app && 
+          cd app && 
+          echo "NODE_ENV=production" > .env && 
+          echo "PORT=3000" >> .env && 
+          echo "DATABASE_URL=postgresql://postgres:${{ secrets.DB_PASSWORD }}@${{ secrets.DB_ENDPOINT }}:5432/${{ secrets.DB_NAME }}" >> .env && 
+          echo "ENCRYPTION_KEY=\"${{ secrets.ENCRYPTION_KEY }}\"" >> .env && 
+          echo "JWT_SECRET=\"${{ secrets.JWT_SECRET }}\"" >> .env && 
+          echo "CLIENT_URL=${{ secrets.CLOUDFRONT_URL }}" >> .env && 
+          npm install && 
+          pm2 restart all || pm2 start npm --name "swashflag" -- start'
+        rm -f ../../private_key.pem 
