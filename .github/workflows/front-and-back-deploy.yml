@@ -8,7 +8,7 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
 
@@ -16,7 +16,7 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-    
+
     - name: Install PNPM
       uses: pnpm/action-setup@v3
       with:
@@ -36,7 +36,7 @@ jobs:
         key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
         restore-keys: |
           ${{ runner.os }}-pnpm-store-
-        
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -45,11 +45,21 @@ jobs:
         aws-region: us-west-2
 
     # Get EC2 public DNS from instance ID
-    - name: Get EC2 Public DNS
-      id: ec2-dns
+    - name: Get EC2 Public DNS and IP
+      id: ec2-info
       run: |
-        EC2_PUBLIC_DNS=$(aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --query "Reservations[0].Instances[0].PublicDnsName" --output text)
-        EC2_PUBLIC_IP=$(aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+        # Get instance information
+        INSTANCE_INFO=$(aws ec2 describe-instances --instance-ids ${{ secrets.EC2_INSTANCE_ID }} --output json)
+
+        # Extract public DNS and IP
+        EC2_PUBLIC_DNS=$(echo "$INSTANCE_INFO" | jq -r '.Reservations[0].Instances[0].PublicDnsName')
+        EC2_PUBLIC_IP=$(echo "$INSTANCE_INFO" | jq -r '.Reservations[0].Instances[0].PublicIpAddress')
+
+        # Print for debugging
+        echo "Retrieved EC2 Public IP: $EC2_PUBLIC_IP"
+        echo "Retrieved EC2 Public DNS: $EC2_PUBLIC_DNS"
+
+        # Set environment variables
         echo "EC2_PUBLIC_DNS=$EC2_PUBLIC_DNS" >> $GITHUB_ENV
         echo "EC2_PUBLIC_IP=$EC2_PUBLIC_IP" >> $GITHUB_ENV
         echo "BACKEND_API_URL=http://$EC2_PUBLIC_DNS:3000" >> $GITHUB_ENV
@@ -67,7 +77,7 @@ jobs:
     - name: Deploy Frontend to S3
       run: |
         aws s3 sync apps/frontend/dist/ s3://${{ secrets.S3_BUCKET_NAME }} --delete
-    
+
     - name: Invalidate CloudFront
       run: |
         # Attempt to invalidate CloudFront distribution if the ID is provided
@@ -84,23 +94,38 @@ jobs:
       run: |
         cd apps/backend
         pnpm install --no-frozen-lockfile
-    
+        pnpm run build
+
     - name: Deploy Backend to EC2
       env:
         PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
       run: |
+        # Debug information
+        echo "Using EC2 IP: ${{ env.EC2_PUBLIC_IP }}"
+
+        # Save private key to file
         echo "$PRIVATE_KEY" > private_key.pem
         chmod 600 private_key.pem
+
+        # Test SSH connection
+        echo "Testing SSH connection..."
+        ssh -v -o StrictHostKeyChecking=no -i private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} 'echo "SSH Connection Successful"'
+
+        # Proceed with deployment if SSH test was successful
+        echo "Creating deployment package..."
         cd apps/backend
-        # Create production build first
-        pnpm run build
-        # Zip up the necessary files for deployment
         zip -r ../../backend.zip . -x "node_modules/*" -x ".git/*"
-        # Install PM2 on the remote server if not already installed
-        ssh -o StrictHostKeyChecking=no -i ../../private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} 'npm list -g pm2 || npm install -g pm2'
-        # Upload and deploy
-        scp -o StrictHostKeyChecking=no -i ../../private_key.pem ../../backend.zip ec2-user@${{ env.EC2_PUBLIC_IP }}:/home/ec2-user/
-        ssh -o StrictHostKeyChecking=no -i ../../private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} '
+        cd ../..
+
+        echo "Uploading deployment package..."
+        scp -o StrictHostKeyChecking=no -i private_key.pem backend.zip ec2-user@${{ env.EC2_PUBLIC_IP }}:/home/ec2-user/
+
+        echo "Running deployment commands on server..."
+        ssh -o StrictHostKeyChecking=no -i private_key.pem ec2-user@${{ env.EC2_PUBLIC_IP }} '
+          # Install PM2 if not already installed
+          which pm2 > /dev/null || npm install -g pm2 &&
+
+          # Deploy the application
           cd /home/ec2-user && 
           unzip -o backend.zip -d app && 
           cd app && 
@@ -111,5 +136,7 @@ jobs:
           echo "JWT_SECRET=\"${{ secrets.JWT_SECRET }}\"" >> .env && 
           echo "CLIENT_URL=${{ secrets.CLOUDFRONT_URL }}" >> .env && 
           npm install --production &&
-          pm2 restart all || pm2 start npm --name "swashflag" -- start'
-        rm -f ../../private_key.pem 
+          pm2 restart swashflag || pm2 start npm --name "swashflag" -- start'
+
+        # Clean up
+        rm -f private_key.pem
